@@ -1,7 +1,7 @@
 from pysat.formula import CNF
 from pysat.solvers import Glucose4
 
-def create_hamiltonian_cycle_formula(n):
+def create_hamiltonian_cycle_formula(n, edges):
     formula = CNF()
     variables = {}
 
@@ -12,20 +12,20 @@ def create_hamiltonian_cycle_formula(n):
 
     # Add constraints for exactly one outgoing arc per vertex
     for i in range(1, n+1):
-        formula.append([var(i, j) for j in range(1, n+1) if i != j])
+        formula.append([var(i, j) for j in range(1, n+1) if i != j and (i, j) in edges])
         for j in range(1, n+1):
-            if i != j:
+            if i != j and (i, j) in edges:
                 for k in range(j+1, n+1):
-                    if i != k:
+                    if i != k and (i, k) in edges:
                         formula.append([-var(i, j), -var(i, k)])
 
     # Add constraints for exactly one incoming arc per vertex
     for j in range(1, n+1):
-        formula.append([var(i, j) for i in range(1, n+1) if i != j])
+        formula.append([var(i, j) for i in range(1, n+1) if i != j and (i, j) in edges])
         for i in range(1, n+1):
-            if i != j:
+            if i != j and (i, j) in edges:
                 for k in range(i+1, n+1):
-                    if k != j:
+                    if k != j and (k, j) in edges:
                         formula.append([-var(i, j), -var(k, j)])
 
     # Binary adder encoding for successor function
@@ -54,7 +54,7 @@ def create_hamiltonian_cycle_formula(n):
                 for bit in range(m):
                     formula.append([-var(i, j), -pos_var(i, bit), pos_var(j, bit)])
 
-    return formula, var
+    return formula, variables
 
 def read_graph_from_file(filename):
     with open(filename, 'r') as file:
@@ -72,24 +72,34 @@ def read_graph_from_file(filename):
 
     return n, edges
 
+def print_hamiltonian_cycle(model, variables):
+    # Create a dictionary mapping variables to their values
+    var_values = {var: (value > 0) for var, value in enumerate(model, start=1)}
+
+    # Create a dictionary mapping vertices to their successors in the cycle
+    successors = {i: j for (i, j), var in variables.items() if var_values[var]}
+
+    # Print the cycle starting from vertex 1
+    i = 1
+    while True:
+        print(f"({i}, {successors[i]})", end=' ')
+        i = successors[i]
+        if i == 1:
+            break
+    print()
+
 # Example usage
 filename = './input/hc-4.col'
 n, edges = read_graph_from_file(filename)
 
-formula, var = create_hamiltonian_cycle_formula(n)
-
-# Add the edges to the formula
-for i, j in edges:
-    formula.append([var(i, j)])
+formula, variables = create_hamiltonian_cycle_formula(n, edges)
 
 solver = Glucose4()
 solver.append_formula(formula)
 
-print(formula.clauses)
-
 if solver.solve():
     model = solver.get_model()
     print("Hamiltonian Cycle exists!")
-    print("Model:", model)
+    print_hamiltonian_cycle(model, variables)
 else:
     print("No Hamiltonian Cycle exists.")
