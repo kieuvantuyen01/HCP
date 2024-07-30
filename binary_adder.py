@@ -1,13 +1,24 @@
 from pysat.formula import CNF
 from pysat.solvers import Glucose4
 
+# Global variable counter
+var_counter = 0
+
+def new_var():
+    global var_counter
+    var_counter += 1
+    return var_counter
+
 def create_hamiltonian_cycle_formula(n, edges):
+    global var_counter
     formula = CNF()
     variables = {}
 
     def var(i, j):
+        global var_counter
         if (i, j) not in variables:
             variables[(i, j)] = len(variables) + 1
+        var_counter = max(var_counter, variables[(i, j)])
         return variables[(i, j)]
 
     # Add constraints for exactly one outgoing arc per vertex
@@ -40,19 +51,52 @@ def create_hamiltonian_cycle_formula(n, edges):
 
     # Constraints for binary adder encoding
     for i in range(2, n+1):
-        formula.append([var(1, i), -pos_var(i, 0)])  # P_i = 2 if H_1i
-        for bit in range(1, m):
-            formula.append([var(1, i), -pos_var(i, bit)])
+        # P_i = 2 if H_1i
+        formula.append([-var(1, i), pos_var(i, 1)])  # The 1st bit of P_i is 1 if H_1i
+        formula.append([-var(1, i), -pos_var(i, 0)])  # The 0th bit of P_i is 0 if H_1i
+        for bit in range(2, m):
+            formula.append([-var(1, i), -pos_var(i, bit)])  # The other bits of P_i are 0 if H_1i
 
-        formula.append([var(i, 1), -pos_var(i, 0)])  # P_i = n if H_i1
-        for bit in range(1, m):
-            formula.append([var(i, 1), -pos_var(i, bit)])
+        # P_i = n if H_i1
+        for bit in range(m):
+            if (n >> bit) & 1:
+                formula.append([-var(i, 1), pos_var(i, bit)])  # The bit-th bit of P_i is 1 if H_i1 and the bit-th bit of n is 1
+            else:
+                formula.append([-var(i, 1), -pos_var(i, bit)])  # The bit-th bit of P_i is 0 if H_i1 and the bit-th bit of n is 0
 
     for i in range(2, n+1):
         for j in range(2, n+1):
             if i != j:
+                # P_j = P_i + 1 if H_ij
+                carry = [var(i, j)]  # Initialize carry with H_ij
                 for bit in range(m):
-                    formula.append([-var(i, j), -pos_var(i, bit), pos_var(j, bit)])
+                    # Create new variables for the sum and carry
+                    sum_var = new_var()
+                    carry_var = new_var()
+
+                    # Constraints for the binary adder
+                    formula.append([-carry[bit], -pos_var(i, bit), sum_var])
+                    formula.append([-carry[bit], pos_var(i, bit), -sum_var])
+                    formula.append([carry[bit], -pos_var(i, bit), -sum_var])
+                    formula.append([carry[bit], pos_var(i, bit), sum_var])
+
+                    if bit < m - 1:
+                        formula.append([-carry[bit], -pos_var(i, bit), -pos_var(i, bit+1), carry_var])
+                        formula.append([-carry[bit], -pos_var(i, bit), pos_var(i, bit+1), -carry_var])
+                        formula.append([-carry[bit], pos_var(i, bit), -pos_var(i, bit+1), -carry_var])
+                        formula.append([-carry[bit], pos_var(i, bit), pos_var(i, bit+1), carry_var])
+                        formula.append([carry[bit], -pos_var(i, bit), -pos_var(i, bit+1), -carry_var])
+                        formula.append([carry[bit], -pos_var(i, bit), pos_var(i, bit+1), carry_var])
+                        formula.append([carry[bit], pos_var(i, bit), -pos_var(i, bit+1), carry_var])
+                        formula.append([carry[bit], pos_var(i, bit), pos_var(i, bit+1), -carry_var])
+
+                    # The sum must be equal to P_j
+                    formula.append([-sum_var, pos_var(j, bit)])
+                    formula.append([sum_var, -pos_var(j, bit)])
+
+                    # Update carry
+                    if bit < m - 1:
+                        carry.append(carry_var)
 
     return formula, variables
 
