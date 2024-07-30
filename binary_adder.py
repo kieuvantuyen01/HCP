@@ -13,13 +13,23 @@ def create_hamiltonian_cycle_formula(n, edges):
     global var_counter
     formula = CNF()
     variables = {}
+    position_vars = {}
 
+    # Hij
     def var(i, j):
         global var_counter
         if (i, j) not in variables:
-            variables[(i, j)] = len(variables) + 1
-        var_counter = max(var_counter, variables[(i, j)])
+            var_counter += 1
+            variables[(i, j)] = var_counter
         return variables[(i, j)]
+
+    # Pi (successor function)
+    def pos_var(i, bit):
+        global var_counter
+        if (i, bit) not in position_vars:
+            var_counter += 1
+            position_vars[(i, bit)] = var_counter
+        return position_vars[(i, bit)]
 
     # Add constraints for exactly one outgoing arc per vertex
     for i in range(1, n+1):
@@ -40,64 +50,82 @@ def create_hamiltonian_cycle_formula(n, edges):
                         formula.append([-var(i, j), -var(k, j)])
 
     # Binary adder encoding for successor function
-    # Using binary representation of positions
-    m = (n-1).bit_length()  # Number of bits to represent positions
+    m = n.bit_length()  # Number of bits to represent positions
 
-    position_vars = {}
-    def pos_var(i, bit):
-        if (i, bit) not in position_vars:
-            position_vars[(i, bit)] = len(variables) + 1 + len(position_vars)
-        return position_vars[(i, bit)]
+    # Initial position constraint P1 = 1
+    for bit in range(m):
+        if bit == 0:
+            formula.append([pos_var(1, bit)])
+        else:
+            formula.append([-pos_var(1, bit)])
 
-    # Constraints for binary adder encoding
+    # H1i ⇒ Pi = 2 (00..010)
     for i in range(2, n+1):
-        # P_i = 2 if H_1i
-        formula.append([-var(1, i), pos_var(i, 1)])  # The 1st bit of P_i is 1 if H_1i
-        formula.append([-var(1, i), -pos_var(i, 0)])  # The 0th bit of P_i is 0 if H_1i
-        for bit in range(2, m):
-            formula.append([-var(1, i), -pos_var(i, bit)])  # The other bits of P_i are 0 if H_1i
-
-        # P_i = n if H_i1
         for bit in range(m):
-            if (n >> bit) & 1:
-                formula.append([-var(i, 1), pos_var(i, bit)])  # The bit-th bit of P_i is 1 if H_i1 and the bit-th bit of n is 1
+            if bit == 1:
+                formula.append([-var(1, i), pos_var(i, bit)])
             else:
-                formula.append([-var(i, 1), -pos_var(i, bit)])  # The bit-th bit of P_i is 0 if H_i1 and the bit-th bit of n is 0
+                formula.append([-var(1, i), -pos_var(i, bit)])
 
+    # Hi1 ⇒ Pi = n (10..00)
+    for i in range(2, n+1):
+        for bit in range(m):
+            if bit == m-1:  # Set the most significant bit to 1
+                formula.append([-var(i, 1), pos_var(i, bit)])
+            else:  # Set all other bits to 0
+                formula.append([-var(i, 1), -pos_var(i, bit)])
+        
     for i in range(2, n+1):
         for j in range(2, n+1):
-            if i != j:
-                # P_j = P_i + 1 if H_ij
-                carry = [var(i, j)]  # Initialize carry with H_ij
+            if i != j and (i, j) in edges:
                 for bit in range(m):
-                    # Create new variables for the sum and carry
-                    sum_var = new_var()
-                    carry_var = new_var()
+                    if bit == 0:
+                        # For bit position 0: Y0 = ¬X0
+                        formula.append([-var(i, j), pos_var(j, bit), pos_var(i, bit)])
+                        formula.append([-var(i, j), -pos_var(j, bit), -pos_var(i, bit)])
+                    elif bit == 1:
+                        # For bit position 1: X0 ⇒ (Y1 = ¬X1) and ¬X0 ⇒ (Y1 = X1)
+                        
+                        # X0 ⇒ (Y1 = ¬X1)
+                        # ¬X0 v ((Y1 v X1) ^ (¬Y1 v ¬X1))
+                        # (¬X0 v (Y1 v X1)) ^ (¬X0 v (¬Y1 v ¬X1))
+                        formula.append([-var(i, j), -pos_var(i, bit-1), pos_var(j, bit), pos_var(i, bit)])
+                        formula.append([-var(i, j), -pos_var(i, bit-1), -pos_var(j, bit), -pos_var(i, bit)])
 
-                    # Constraints for the binary adder
-                    formula.append([-carry[bit], -pos_var(i, bit), sum_var])
-                    formula.append([-carry[bit], pos_var(i, bit), -sum_var])
-                    formula.append([carry[bit], -pos_var(i, bit), -sum_var])
-                    formula.append([carry[bit], pos_var(i, bit), sum_var])
+                        # ¬X0 ⇒ (Y1 = X1)
+                        # X0 v ((Y1 v ¬X1) ^ (¬Y1 v X1))
+                        # (X0 v (Y1 v ¬X1)) ^ (X0 v (¬Y1 v X1))
+                        formula.append([-var(i, j), -pos_var(i, bit-1), pos_var(j, bit), -pos_var(i, bit)])
+                        formula.append([-var(i, j), -pos_var(i, bit-1), -pos_var(j, bit), pos_var(i, bit)])
+                    else:
+                        # For bit positions i > 1, consider two bits at a time
+                        # ¬Yi−1 ∧ Xi−1 ⇒ Yi = ¬Xi
+                        # (Yi−1 v ¬Xi−1) v ((Yi v Xi) ^ (¬Yi v ¬Xi))
+                        # (Yi−1 v ¬Xi−1 v Yi v Xi) ^ (Yi−1 v ¬Xi−1 v ¬Yi v ¬Xi)
+                        
+                        formula.append([-var(i, j), pos_var(j, bit-1), -pos_var(i, bit), pos_var(j, bit), pos_var(i, bit)])
+                        formula.append([-var(i, j), pos_var(j, bit-1), -pos_var(i, bit), -pos_var(j, bit), -pos_var(i, bit)])
 
-                    if bit < m - 1:
-                        formula.append([-carry[bit], -pos_var(i, bit), -pos_var(i, bit+1), carry_var])
-                        formula.append([-carry[bit], -pos_var(i, bit), pos_var(i, bit+1), -carry_var])
-                        formula.append([-carry[bit], pos_var(i, bit), -pos_var(i, bit+1), -carry_var])
-                        formula.append([-carry[bit], pos_var(i, bit), pos_var(i, bit+1), carry_var])
-                        formula.append([carry[bit], -pos_var(i, bit), -pos_var(i, bit+1), -carry_var])
-                        formula.append([carry[bit], -pos_var(i, bit), pos_var(i, bit+1), carry_var])
-                        formula.append([carry[bit], pos_var(i, bit), -pos_var(i, bit+1), carry_var])
-                        formula.append([carry[bit], pos_var(i, bit), pos_var(i, bit+1), -carry_var])
+                        # ¬Yi−1 ∧ Xi−1 ∧ Xi ⇒ Yi+1 = ¬Xi+1
+                        # (Yi−1 v ¬Xi−1 v ¬Xi) v ((Yi+1 v Xi+1) ^ (¬Yi+1 v ¬Xi+1))
+                        # (Yi−1 v ¬Xi−1 v ¬Xi v Yi+1 v Xi+1) ^ (Yi−1 v ¬Xi−1 v ¬Xi v ¬Yi+1 v ¬Xi+1)
+                        
+                        formula.append([-var(i, j), pos_var(j, bit-1), -pos_var(i, bit-1), -pos_var(i, bit), pos_var(j, bit+1), pos_var(i, bit+1)])
+                        formula.append([-var(i, j), pos_var(j, bit-1), -pos_var(i, bit-1), -pos_var(i, bit), -pos_var(j, bit+1), -pos_var(i, bit+1)])
 
-                    # The sum must be equal to P_j
-                    formula.append([-sum_var, pos_var(j, bit)])
-                    formula.append([sum_var, -pos_var(j, bit)])
-
-                    # Update carry
-                    if bit < m - 1:
-                        carry.append(carry_var)
-
+                        # (Yi-1 v ¬Xi-1) ⇒ Yi = Xi ∧ Yi+1 = Xi+1
+                        # (¬Yi−1 ∧ Xi−1) v ((Yi v Xi) ^ (Yi+1 v Xi+1) ^ (¬Yi v ¬Xi) ^ (¬Yi+1 v ¬Xi+1))
+                        # (¬Yi−1 v Yi) ^ (¬Yi−1 v Xi) ^ (¬Yi−1 v Yi+1) ^ (¬Yi−1 v Xi+1) ^ (Xi−1 v Yi) ^ (Xi−1 v Xi) ^ (Xi−1 v Yi+1) ^ (Xi−1 v Xi+1)
+                        
+                        formula.append([-var(i, j), -pos_var(j, bit-1), pos_var(j, bit)])
+                        formula.append([-var(i, j), -pos_var(j, bit-1), pos_var(i, bit)])
+                        formula.append([-var(i, j), -pos_var(j, bit-1), pos_var(j, bit+1)])
+                        formula.append([-var(i, j), -pos_var(j, bit-1), pos_var(i, bit+1)])
+                        formula.append([-var(i, j), pos_var(j, bit-1), pos_var(j, bit)])
+                        formula.append([-var(i, j), pos_var(j, bit-1), pos_var(i, bit)])
+                        formula.append([-var(i, j), pos_var(j, bit-1), pos_var(j, bit+1)])
+                        formula.append([-var(i, j), pos_var(j, bit-1), pos_var(i, bit+1)])
+                        
     return formula, variables
 
 def read_graph_from_file(filename):
@@ -133,7 +161,7 @@ def print_hamiltonian_cycle(model, variables):
     print()
 
 # Example usage
-filename = './input/hc-4.col'
+filename = './input/hc-5.col'
 n, edges = read_graph_from_file(filename)
 
 formula, variables = create_hamiltonian_cycle_formula(n, edges)
