@@ -95,16 +95,16 @@ def create_hamiltonian_cycle_formula(n, edges):
                         # ¬X0 ⇒ (Y1 = X1)
                         # X0 v ((Y1 v ¬X1) ^ (¬Y1 v X1))
                         # (X0 v (Y1 v ¬X1)) ^ (X0 v (¬Y1 v X1))
-                        formula.append([-var(i, j), -pos_var(i, bit-1), pos_var(j, bit), -pos_var(i, bit)])
-                        formula.append([-var(i, j), -pos_var(i, bit-1), -pos_var(j, bit), pos_var(i, bit)])
+                        formula.append([-var(i, j), pos_var(i, bit-1), pos_var(j, bit), -pos_var(i, bit)])
+                        formula.append([-var(i, j), pos_var(i, bit-1), -pos_var(j, bit), pos_var(i, bit)])
                     else:
                         # For bit positions i > 1, consider two bits at a time
                         # ¬Yi−1 ∧ Xi−1 ⇒ Yi = ¬Xi
                         # (Yi−1 v ¬Xi−1) v ((Yi v Xi) ^ (¬Yi v ¬Xi))
                         # (Yi−1 v ¬Xi−1 v Yi v Xi) ^ (Yi−1 v ¬Xi−1 v ¬Yi v ¬Xi)
                         
-                        formula.append([-var(i, j), pos_var(j, bit-1), -pos_var(i, bit), pos_var(j, bit), pos_var(i, bit)])
-                        formula.append([-var(i, j), pos_var(j, bit-1), -pos_var(i, bit), -pos_var(j, bit), -pos_var(i, bit)])
+                        formula.append([-var(i, j), pos_var(j, bit-1), -pos_var(i, bit-1), pos_var(j, bit), pos_var(i, bit)])
+                        formula.append([-var(i, j), pos_var(j, bit-1), -pos_var(i, bit-1), -pos_var(j, bit), -pos_var(i, bit)])
 
                         # ¬Yi−1 ∧ Xi−1 ∧ Xi ⇒ Yi+1 = ¬Xi+1
                         # (Yi−1 v ¬Xi−1 v ¬Xi) v ((Yi+1 v Xi+1) ^ (¬Yi+1 v ¬Xi+1))
@@ -114,18 +114,18 @@ def create_hamiltonian_cycle_formula(n, edges):
                         formula.append([-var(i, j), pos_var(j, bit-1), -pos_var(i, bit-1), -pos_var(i, bit), -pos_var(j, bit+1), -pos_var(i, bit+1)])
 
                         # (Yi-1 v ¬Xi-1) ⇒ Yi = Xi ∧ Yi+1 = Xi+1
-                        # (¬Yi−1 ∧ Xi−1) v ((Yi v Xi) ^ (Yi+1 v Xi+1) ^ (¬Yi v ¬Xi) ^ (¬Yi+1 v ¬Xi+1))
-                        # (¬Yi−1 v Yi) ^ (¬Yi−1 v Xi) ^ (¬Yi−1 v Yi+1) ^ (¬Yi−1 v Xi+1) ^ (Xi−1 v Yi) ^ (Xi−1 v Xi) ^ (Xi−1 v Yi+1) ^ (Xi−1 v Xi+1)
-                        
-                        formula.append([-var(i, j), -pos_var(j, bit-1), pos_var(j, bit)])
-                        formula.append([-var(i, j), -pos_var(j, bit-1), pos_var(i, bit)])
-                        formula.append([-var(i, j), -pos_var(j, bit-1), pos_var(j, bit+1)])
-                        formula.append([-var(i, j), -pos_var(j, bit-1), pos_var(i, bit+1)])
-                        formula.append([-var(i, j), pos_var(j, bit-1), pos_var(j, bit)])
-                        formula.append([-var(i, j), pos_var(j, bit-1), pos_var(i, bit)])
-                        formula.append([-var(i, j), pos_var(j, bit-1), pos_var(j, bit+1)])
-                        formula.append([-var(i, j), pos_var(j, bit-1), pos_var(i, bit+1)])
-                        
+                        # (¬Yi−1 ∧ Xi−1) v ((Yi v ¬Xi) ^ (¬Yi v Xi) ^ (Yi+1 v ¬Xi+1) ^ (¬Yi+1 v Xi+1))
+                        # ((¬Yi−1 ∧ Xi−1) v (Yi v ¬Xi)) ^ ((¬Yi−1 ∧ Xi−1) v (¬Yi v Xi)) ^ ((¬Yi−1 ∧ Xi−1) v (Yi+1 v ¬Xi+1)) ^ ((¬Yi−1 ∧ Xi−1) v (¬Yi+1 v Xi+1))
+                        # ((Yi v ¬Xi v ¬Yi−1) ∧ (Yi v ¬Xi v Xi−1)) ^ ((¬Yi v Xi v ¬Yi−1) ∧ (¬Yi v Xi v Xi−1)) ^ ((Yi+1 v ¬Xi+1 v ¬Yi−1) ∧ (Yi+1 v ¬Xi+1 v Xi−1)) ^ ((¬Yi+1 v Xi+1 v ¬Yi−1) ∧ (¬Yi+1 v Xi+1 v Xi−1))
+                        formula.append([-var(i, j), pos_var(j, bit), -pos_var(i, bit), -pos_var(j, bit-1)])
+                        formula.append([-var(i, j), pos_var(j, bit), -pos_var(i, bit), pos_var(i, bit-1)])
+                        formula.append([-var(i, j), -pos_var(j, bit), pos_var(i, bit), -pos_var(j, bit-1)])
+                        formula.append([-var(i, j), -pos_var(j, bit), pos_var(i, bit), pos_var(i, bit-1)])
+                        formula.append([-var(i, j), pos_var(j, bit+1), -pos_var(i, bit+1), -pos_var(j, bit-1)])
+                        formula.append([-var(i, j), pos_var(j, bit+1), -pos_var(i, bit+1), pos_var(i, bit-1)])
+                        formula.append([-var(i, j), -pos_var(j, bit+1), pos_var(i, bit+1), -pos_var(j, bit-1)])
+                        formula.append([-var(i, j), -pos_var(j, bit+1), pos_var(i, bit+1), pos_var(i, bit-1)])
+
     return formula, variables
 
 def read_graph_from_file(filename):
