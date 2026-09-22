@@ -103,6 +103,15 @@ fn main() {
     let is_two_tier = matches.is_present("two-tier") && matches.value_of("two-tier").map_or(true, |v| v != "0");
     let is_staged_smt = matches.is_present("staged-smt") && matches.value_of("staged-smt").map_or(true, |v| v != "0");
     let auto_mode = matches.value_of("auto").map_or(true, |v| v != "0");
+    let structural_decomposition = matches
+        .value_of("structural-decomposition")
+        .map_or(true, |v| v != "0");
+    let degree2_contraction = matches
+        .value_of("degree2-contraction")
+        .map_or(true, |v| v != "0");
+    let cycle_repair = matches
+        .value_of("cycle-repair")
+        .map_or(true, |v| v != "0");
     let macro_gadget = matches.is_present("macro-gadget") && matches.value_of("macro-gadget").map_or(true, |v| v != "0");
     let bounded_freezer = matches.is_present("bounded-freezer") && matches.value_of("bounded-freezer").map_or(true, |v| v != "0");
     let alternating_engine = if matches.is_present("no-alternating-engine") {
@@ -152,7 +161,7 @@ fn main() {
         let opt = two_tier_orchestrator::TwoTierSolverOptions {
             timeout_secs,
             max_iterations: 50_000,
-            enable_patching: true,
+            enable_patching: cycle_repair,
             output_path: output_tour_path,
         };
         let res = two_tier_orchestrator::solve_graph_two_tier(&g, &opt);
@@ -180,6 +189,9 @@ fn main() {
 
     let mut hybrid_opts = hybrid_orchestrator::HybridOptions {
         auto_mode: auto_mode && !macro_gadget && !bounded_freezer && !matches.is_present("ablation"),
+        structural_decomposition,
+        degree2_contraction,
+        cycle_repair,
         timeout_secs,
         output_tour: output_tour_path.clone(),
         macro_gadget,
@@ -210,7 +222,11 @@ fn main() {
     if pruned > 0 {
         println!("Pruned {} degree-2 triangle shortcut edges", pruned);
     }
-    let (contracted_g, contractor) = Degree2Contractor::contract(&g);
+    let (contracted_g, contractor) = if degree2_contraction {
+        Degree2Contractor::contract(&g)
+    } else {
+        (g.clone(), Degree2Contractor::identity(&g))
+    };
 
     if let Some(cycle) = contractor.is_direct_cycle {
         println!("Graph is a single 2-regular Hamiltonian cycle.");
@@ -253,7 +269,7 @@ fn main() {
     // println!("solver={},encoding={}",solver,encoding);
     // println!("{:?}",g);
     println!("file input time = {:?}", time1);
-    let tour = hcp_solver::solve_hamilton(contracted_g, &contractor, &hub_registry, solver, encoding, blocking, symmetry, two_opt, loop_prohibition, cnf_normalize, balanced, de_arcify,config,degree_order,arcs_order,three_opt,cegar_fallback,mtz_stall,adaptive_escalation,sub_hcp_timeout,max_cluster_size,timeout_secs,instant,output_foldername, if hybrid_opts.macro_gadget { 1 } else { 0 }, if hybrid_opts.bounded_freezer { 1 } else { 0 }, if hybrid_opts.alternating_engine { 1 } else { 0 });
+    let tour = hcp_solver::solve_hamilton_with_decomposition(contracted_g, &contractor, &hub_registry, solver, encoding, blocking, symmetry, two_opt, loop_prohibition, cnf_normalize, balanced, de_arcify,config,degree_order,arcs_order,three_opt,cegar_fallback,mtz_stall,adaptive_escalation,sub_hcp_timeout,max_cluster_size,timeout_secs,instant,output_foldername, if hybrid_opts.macro_gadget { 1 } else { 0 }, if hybrid_opts.bounded_freezer { 1 } else { 0 }, if hybrid_opts.alternating_engine { 1 } else { 0 }, structural_decomposition, cycle_repair);
     if let Some(ref t) = tour {
         if let Some(ref out_path) = output_tour_path {
             if let Err(e) = tour_verifier::TourVerifier::write_tsplib_hcp(t, "tour", out_path) {

@@ -13,6 +13,9 @@ fn test_hybrid_orchestrator_synthetic_solve() {
 
     let opts = HybridOptions {
         auto_mode: true,
+        structural_decomposition: true,
+        degree2_contraction: true,
+        cycle_repair: true,
         timeout_secs: 10.0,
         output_tour: None,
         macro_gadget: false,
@@ -30,6 +33,80 @@ fn test_hybrid_orchestrator_synthetic_solve() {
 }
 
 #[test]
+fn test_no_decomposition_profile_solves_monolithically() {
+    let mut g = Graph::new();
+    for i in 1..=6 {
+        g.add_edge(i, if i == 6 { 1 } else { i + 1 });
+    }
+
+    let opts = HybridOptions {
+        auto_mode: true,
+        structural_decomposition: false,
+        degree2_contraction: true,
+        cycle_repair: true,
+        timeout_secs: 10.0,
+        output_tour: None,
+        macro_gadget: false,
+        bounded_freezer: false,
+        alternating_engine: true,
+    };
+
+    let tour = HybridOrchestrator::solve(&g, &opts)
+        .expect("the matched monolithic profile should solve a simple cycle");
+    assert!(TourVerifier::verify_raw_tour(&tour, &g).is_ok());
+}
+
+#[test]
+fn test_no_contraction_profile_solves_uncontracted_cycle() {
+    let mut g = Graph::new();
+    for i in 1..=6 {
+        g.add_edge(i, if i == 6 { 1 } else { i + 1 });
+    }
+
+    let opts = HybridOptions {
+        auto_mode: true,
+        structural_decomposition: true,
+        degree2_contraction: false,
+        cycle_repair: true,
+        timeout_secs: 10.0,
+        output_tour: None,
+        macro_gadget: false,
+        bounded_freezer: false,
+        alternating_engine: true,
+    };
+
+    let tour = HybridOrchestrator::solve(&g, &opts)
+        .expect("NoContraction should solve a simple cycle on the original graph");
+    assert!(TourVerifier::verify_raw_tour(&tour, &g).is_ok());
+}
+
+#[test]
+fn test_no_repair_profile_retains_cegar_search() {
+    let mut g = Graph::new();
+    for i in 1..=4 {
+        g.add_edge(i, if i == 4 { 1 } else { i + 1 });
+        g.add_edge(i + 4, if i == 4 { 5 } else { i + 5 });
+        g.add_edge(i, i + 4);
+    }
+
+    let opts = HybridOptions {
+        auto_mode: false,
+        structural_decomposition: true,
+        degree2_contraction: true,
+        cycle_repair: false,
+        timeout_secs: 10.0,
+        output_tour: None,
+        macro_gadget: false,
+        bounded_freezer: false,
+        alternating_engine: true,
+    };
+
+    let tour = HybridOrchestrator::solve(&g, &opts)
+        .expect("NoRepair should retain SAT-CEGAR connectivity refinement");
+    assert!(TourVerifier::verify_raw_tour(&tour, &g).is_ok());
+}
+
+#[test]
 fn test_hybrid_orchestrator_b2_sinz_route_and_output() {
     let mut g = Graph::new();
     // Small 3-regular Hamiltonian graph (Petersen-like or 8-vertex cubic)
@@ -43,6 +120,9 @@ fn test_hybrid_orchestrator_b2_sinz_route_and_output() {
     let out_file = "scratch/test_hybrid_out.hcp";
     let opts = HybridOptions {
         auto_mode: false, // Force B2/General SMT track
+        structural_decomposition: true,
+        degree2_contraction: true,
+        cycle_repair: true,
         timeout_secs: 10.0,
         output_tour: Some(out_file.to_string()),
         macro_gadget: false,
@@ -70,6 +150,9 @@ fn test_hybrid_orchestrator_infeasible_graph() {
 
     let opts = HybridOptions {
         auto_mode: true,
+        structural_decomposition: true,
+        degree2_contraction: true,
+        cycle_repair: true,
         timeout_secs: 5.0,
         output_tour: None,
         macro_gadget: false,
@@ -85,6 +168,9 @@ fn test_hybrid_orchestrator_infeasible_graph() {
 fn test_hybrid_orchestrator_default_options() {
     let opts = HybridOptions::default();
     assert!(opts.auto_mode);
+    assert!(opts.structural_decomposition);
+    assert!(opts.degree2_contraction);
+    assert!(opts.cycle_repair);
     assert_eq!(opts.timeout_secs, 1800.0);
     assert!(opts.output_tour.is_none());
 }
@@ -109,6 +195,9 @@ fn test_hybrid_orchestrator_b1_ladder_synthetic() {
 
     let _opts = HybridOptions {
         auto_mode: true,
+        structural_decomposition: true,
+        degree2_contraction: true,
+        cycle_repair: true,
         timeout_secs: 10.0,
         output_tour: None,
         macro_gadget: false,
@@ -166,6 +255,9 @@ fn test_hybrid_orchestrator_snark_bridge_solve() {
 
     let opts = HybridOptions {
         auto_mode: true,
+        structural_decomposition: true,
+        degree2_contraction: true,
+        cycle_repair: true,
         timeout_secs: 10.0,
         output_tour: None,
         macro_gadget: false,
@@ -194,6 +286,9 @@ fn test_hybrid_orchestrator_gadget_parity_solve() {
 
     let opts = HybridOptions {
         auto_mode: true,
+        structural_decomposition: true,
+        degree2_contraction: true,
+        cycle_repair: true,
         timeout_secs: 10.0,
         output_tour: None,
         macro_gadget: false,
@@ -207,5 +302,3 @@ fn test_hybrid_orchestrator_gadget_parity_solve() {
     assert_eq!(t.len(), 9);
     assert!(TourVerifier::verify_raw_tour(&t, &g).is_ok());
 }
-
-

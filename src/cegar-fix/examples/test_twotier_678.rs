@@ -7,6 +7,7 @@ fn main() {
     let options = TwoTierOptions {
         timeout_secs: 10.0,
         output_tour: None,
+        cycle_repair: true,
     };
     let t0 = Instant::now();
     let tour_opt = TwoTierOrchestrator::solve(&raw_g, &options);
