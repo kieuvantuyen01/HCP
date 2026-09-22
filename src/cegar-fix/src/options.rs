@@ -259,6 +259,30 @@ pub fn get_options() -> clap::ArgMatches {
                 .default_value("1"),
         )
         .arg(
+            Arg::with_name("structural-decomposition")
+                .long("structural-decomposition")
+                .value_name("n")
+                .help("Structural decomposition used by the proposed method:\n 0: Disabled (matched monolithic baseline)\n 1: Enabled (default)")
+                .takes_value(true)
+                .default_value("1"),
+        )
+        .arg(
+            Arg::with_name("degree2-contraction")
+                .long("degree2-contraction")
+                .value_name("n")
+                .help("Degree-2 chain contraction:\n 0: Disabled (NoContraction ablation)\n 1: Enabled (default)")
+                .takes_value(true)
+                .default_value("1"),
+        )
+        .arg(
+            Arg::with_name("cycle-repair")
+                .long("cycle-repair")
+                .value_name("n")
+                .help("Cycle-cover repair and patching:\n 0: Disabled (NoRepair ablation)\n 1: Enabled (default)")
+                .takes_value(true)
+                .default_value("1"),
+        )
+        .arg(
             Arg::with_name("macro-gadget")
                 .long("macro-gadget")
                 .value_name("n")

@@ -266,23 +266,38 @@ pub fn add_cluster_cut_constraints(
     added_clauses
 }
 
-pub fn solve_hamilton(g:Graph, contractor: &Degree2Contractor, hub_registry: &HubRegistry, _s:i32, encode_method:i32, block_method: i32,symmetry: i32 ,opt:i32,loop_prohibition: i32,cnf_normalize:i32,balanced:i32,dearcify:i32, cadical_config:i32, degree_order:i32, arcs_order:i32, three_opt:i32, _cegar_fallback:i32, _mtz_stall:i32, _adaptive_escalation:i32, _sub_hcp_timeout: u64, _max_cluster_size: usize, timeout_secs: f64, instant:Instant,output_folder:&str, macro_gadget: i32, bounded_freezer: i32, alternating_engine: i32) -> Option<Vec<i32>> {
+pub fn solve_hamilton(g:Graph, contractor: &Degree2Contractor, hub_registry: &HubRegistry, s:i32, encode_method:i32, block_method: i32,symmetry: i32 ,opt:i32,loop_prohibition: i32,cnf_normalize:i32,balanced:i32,dearcify:i32, cadical_config:i32, degree_order:i32, arcs_order:i32, three_opt:i32, cegar_fallback:i32, mtz_stall:i32, adaptive_escalation:i32, sub_hcp_timeout: u64, max_cluster_size: usize, timeout_secs: f64, instant:Instant,output_folder:&str, macro_gadget: i32, bounded_freezer: i32, alternating_engine: i32) -> Option<Vec<i32>> {
+    solve_hamilton_with_decomposition(
+        g, contractor, hub_registry, s, encode_method, block_method, symmetry,
+        opt, loop_prohibition, cnf_normalize, balanced, dearcify,
+        cadical_config, degree_order, arcs_order, three_opt, cegar_fallback,
+        mtz_stall, adaptive_escalation, sub_hcp_timeout, max_cluster_size,
+        timeout_secs, instant, output_folder, macro_gadget, bounded_freezer,
+        alternating_engine, true, true,
+    )
+}
+
+pub fn solve_hamilton_with_decomposition(g:Graph, contractor: &Degree2Contractor, hub_registry: &HubRegistry, _s:i32, encode_method:i32, block_method: i32,symmetry: i32 ,opt:i32,loop_prohibition:i32,cnf_normalize:i32,balanced:i32,dearcify:i32, cadical_config:i32, degree_order:i32, arcs_order:i32, three_opt:i32, _cegar_fallback:i32, _mtz_stall:i32, _adaptive_escalation:i32, _sub_hcp_timeout: u64, _max_cluster_size: usize, timeout_secs: f64, instant:Instant,output_folder:&str, macro_gadget: i32, bounded_freezer: i32, alternating_engine: i32, structural_decomposition: bool, cycle_repair: bool) -> Option<Vec<i32>> {
     let now = instant.elapsed();
 
     // Fast Track: Inverse 3-SAT De-reduction & Tour Synthesis
-    if let Some(synthesized_tour) = Inverse3SatSynthesizer::try_solve_via_inverse_3sat(&g) {
-        println!("Inverse3SatSynthesizer: successfully de-reduced graph to 3-SAT and synthesized valid Hamiltonian tour!");
-        return Some(contractor.expand_tour(&synthesized_tour));
+    if structural_decomposition {
+        if let Some(synthesized_tour) = Inverse3SatSynthesizer::try_solve_via_inverse_3sat(&g) {
+            println!("Inverse3SatSynthesizer: successfully de-reduced graph to 3-SAT and synthesized valid Hamiltonian tour!");
+            return Some(contractor.expand_tour(&synthesized_tour));
+        }
     }
 
     // Fast Track: Hub-Centric Hierarchical Decomposition
-    if let Some(hierarchical_tour) = HubHierarchicalDecomposer::try_solve_hierarchical(&g) {
-        println!("HubHierarchicalDecomposer: successfully solved graph via 2-tier hub hierarchy!");
-        return Some(contractor.expand_tour(&hierarchical_tour));
+    if structural_decomposition {
+        if let Some(hierarchical_tour) = HubHierarchicalDecomposer::try_solve_hierarchical(&g) {
+            println!("HubHierarchicalDecomposer: successfully solved graph via 2-tier hub hierarchy!");
+            return Some(contractor.expand_tour(&hierarchical_tour));
+        }
     }
 
     // Fast Track: Modular Ring DP / Quotient Solver
-    if !contractor.chain_map.is_empty() && hub_registry.hub_vertices.is_empty() {
+    if structural_decomposition && !contractor.chain_map.is_empty() && hub_registry.hub_vertices.is_empty() {
         if let Some(ring_tour) = RingDpSolver::solve_contracted(&g, contractor) {
             println!("RingDpSolver: successfully solved graph via Modular Ring Quotient Solver!");
             let line = ring_tour.iter().map(|i| i.to_string()).collect::<Vec<String>>().join(" ");
@@ -347,7 +362,11 @@ pub fn solve_hamilton(g:Graph, contractor: &Degree2Contractor, hub_registry: &Hu
     */
 
     // Interface Port Truth Assignment & Flow Synchronizer
-    let dual_paths = InterfacePortSynchronizer::extract_gadget_dual_paths(&g, 32);
+    let dual_paths = if structural_decomposition {
+        InterfacePortSynchronizer::extract_gadget_dual_paths(&g, 32)
+    } else {
+        Vec::new()
+    };
     if dual_paths.len() >= 4 {
         println!("InterfacePortSynchronizer: detected {} gadget modules with dual T/F paths, injecting flow synchronization clauses", dual_paths.len());
         InterfacePortSynchronizer::encode_interface_port_synchronization(&dual_paths, &g, &mut encoder, &mut cnf);
@@ -355,7 +374,7 @@ pub fn solve_hamilton(g:Graph, contractor: &Degree2Contractor, hub_registry: &Hu
 
     // Bipartite Module State Equivalence Encoder (Approach 2)
     // Only apply to pure modular reduction graphs without hubs (Hubs = 0) where modules are cleanly detected and macro_gadget is enabled
-    if macro_gadget != 0 && hub_registry.hub_vertices.is_empty() && g.adjacency_list.len() >= 44 && !contractor.chain_map.is_empty() {
+    if structural_decomposition && macro_gadget != 0 && hub_registry.hub_vertices.is_empty() && g.adjacency_list.len() >= 44 && !contractor.chain_map.is_empty() {
         let bip_modules = BipartiteModuleDetector::detect_44_modules(&g, contractor);
         if !bip_modules.is_empty() {
             let mut extracted = Vec::new();
@@ -433,6 +452,8 @@ pub fn solve_hamilton(g:Graph, contractor: &Degree2Contractor, hub_registry: &Hu
         cadical_config,
         bounded_freezer,
         alternating_engine,
+        structural_decomposition,
+        cycle_repair,
     );
     println!("overall incremented number = {}", increment);
     println!("overall number of added block clauses = {}", block);
@@ -469,9 +490,11 @@ fn cegar(
     _cadical_config: i32,
     bounded_freezer: i32,
     alternating_engine: i32,
+    structural_decomposition: bool,
+    cycle_repair: bool,
 ) -> (i32, i32, Option<Vec<i32>>) {
     // Attempt Modular Macro-Decomposition when dense hubs are detected
-    if hub_registry.hub_vertices.len() >= 5 {
+    if structural_decomposition && hub_registry.hub_vertices.len() >= 5 {
         if let Some(tour) = ModularSolver::solve_via_modular_decomposition(&g, contractor, hub_registry) {
             println!("s SATISFIABLE (via Modular Macro-Decomposition)");
             println!("overall incremented number = 0");
@@ -482,7 +505,7 @@ fn cegar(
     }
 
     // Attempt Hub-Partitioned Divide-and-Conquer for Dense Hub Graphs
-    if !hub_registry.hub_vertices.is_empty() && hub_registry.hub_vertices.len() >= 3 {
+    if structural_decomposition && !hub_registry.hub_vertices.is_empty() && hub_registry.hub_vertices.len() >= 3 {
         if let Some(partition_tour) = HubPartitionedSolver::solve_via_hub_partition(&g, contractor, hub_registry) {
             if partition_tour.len() == g.adjacency_list.len() {
                 println!("number of subcycles found = 1 (via hub-partitioned sub-hcp)");
@@ -571,7 +594,7 @@ fn cegar(
                     println!("sat solution cycle lengths map (length:number) = {:?}", map_cycle_lengths(&sol_cycles));
 
                     // Attempt Alternating Port Engine Cycle Compression
-                    let sol_cycles = if alternating_engine != 0 && !contractor.chain_map.is_empty() && sol_cycles.len() > 1 {
+                    let sol_cycles = if cycle_repair && alternating_engine != 0 && !contractor.chain_map.is_empty() && sol_cycles.len() > 1 {
                         let repaired = AlternatingPortEngine::repair(&sol_cycles, &g, contractor, 5, 2000);
                         if repaired.len() < sol_cycles.len() {
                             println!("AlternatingPortEngine: compressed subcycles from {} down to {} cycles", sol_cycles.len(), repaired.len());
@@ -602,7 +625,7 @@ fn cegar(
                     };
 
                     // Attempt Port Corridor LNS Subcycle Absorption
-                    let sol_cycles = if alternating_engine != 0 && !contractor.chain_map.is_empty() && sol_cycles.len() > 1 {
+                    let sol_cycles = if cycle_repair && alternating_engine != 0 && !contractor.chain_map.is_empty() && sol_cycles.len() > 1 {
                         let absorbed = PortCorridorLns::repair(&sol_cycles, &g, contractor, encoder, &base_cnf);
                         if absorbed.len() < sol_cycles.len() {
                             println!("PortCorridorLns: absorbed satellite subcycles from {} down to {} cycles", sol_cycles.len(), absorbed.len());
@@ -633,7 +656,7 @@ fn cegar(
                     };
 
                     // Attempt Multi-Subcycle Hub Patching
-                    let sol_cycles = if sol_cycles.len() > 1 && !hub_registry.hub_vertices.is_empty() {
+                    let sol_cycles = if cycle_repair && sol_cycles.len() > 1 && !hub_registry.hub_vertices.is_empty() {
                         let patched = HubPatcher::patch_cycles_via_hubs(&sol_cycles, &g, contractor, hub_registry);
                         if patched.len() == 1 && patched[0].len() == g.adjacency_list.len() {
                             println!("number of subcycles found = 1 (via hub patching)");
@@ -657,7 +680,7 @@ fn cegar(
                     };
 
                     // Attempt Maximum Matching Global Patching on remaining subcycles
-                    let sol_cycles = if sol_cycles.len() > 1 {
+                    let sol_cycles = if cycle_repair && sol_cycles.len() > 1 {
                         let patched = MatchingPatcher::patch_cycles_via_matching(&sol_cycles, &g, contractor, hub_registry);
                         if patched.len() == 1 && patched[0].len() == g.adjacency_list.len() {
                             println!("number of subcycles found = 1 (via matching patching)");
@@ -681,7 +704,7 @@ fn cegar(
                     };
 
                     // Attempt Chained k-Opt / Lin-Kernighan Variable-Depth Patching
-                    let sol_cycles = if sol_cycles.len() > 1 {
+                    let sol_cycles = if cycle_repair && sol_cycles.len() > 1 {
                         let patched = ChainedLKSolver::patch_cycles_via_chained_lk(&sol_cycles, &g, contractor, hub_registry, 6);
                         if patched.len() == 1 && patched[0].len() == g.adjacency_list.len() {
                             println!("number of subcycles found = 1 (via chained lk patching)");
@@ -705,7 +728,7 @@ fn cegar(
                     };
 
                     // Attempt Iterated Local Search (ILS) with Double-Bridge Kicks
-                    let sol_cycles = if sol_cycles.len() > 1 {
+                    let sol_cycles = if cycle_repair && sol_cycles.len() > 1 {
                         let patched = IteratedLocalSearchPatcher::solve_via_ils(&sol_cycles, &g, contractor, hub_registry, 200);
                         if patched.len() == 1 && patched[0].len() == g.adjacency_list.len() {
                             println!("number of subcycles found = 1 (via ils patching)");
@@ -729,7 +752,7 @@ fn cegar(
                     };
 
                     // Attempt Macro-Graph Hierarchical Contraction Solver
-                    let sol_cycles = if sol_cycles.len() > 1 {
+                    let sol_cycles = if cycle_repair && sol_cycles.len() > 1 {
                         if let Some(macro_tour) = MacroGraphSolver::solve_via_macro_graph(&sol_cycles, &g, contractor, hub_registry) {
                             if macro_tour.len() == g.adjacency_list.len() {
                                 println!("number of subcycles found = 1 (via macro-graph solver)");
@@ -753,7 +776,7 @@ fn cegar(
                     };
 
                     // Attempt Multi-Cycle Alternating Chain Splicer & Absorber
-                    let sol_cycles = if sol_cycles.len() > 1 {
+                    let sol_cycles = if cycle_repair && sol_cycles.len() > 1 {
                         let absorbed = CycleChainAbsorber::absorb_all(&sol_cycles, &g, contractor, hub_registry);
                         if absorbed.len() == 1 && absorbed[0].len() == g.adjacency_list.len() {
                             println!("number of subcycles found = 1 (via cycle chain absorber)");
@@ -777,7 +800,7 @@ fn cegar(
                     };
 
                     // Attempt Hemisphere Splicing for 2..=4 macro-components
-                    let sol_cycles = if sol_cycles.len() >= 2 && sol_cycles.len() <= 4 {
+                    let sol_cycles = if cycle_repair && sol_cycles.len() >= 2 && sol_cycles.len() <= 4 {
                         if let Some(spliced) = HemisphereSplicer::try_direct_splice_all(&sol_cycles, &g, contractor) {
                             println!("HemisphereSplicer: directly spliced macro-components from {} to {} cycles", sol_cycles.len(), spliced.len());
                             if spliced.len() == 1 && spliced[0].len() == g.adjacency_list.len() {
@@ -805,7 +828,7 @@ fn cegar(
                     };
 
                     // Attempt Multi-Hop Boundary Alternating Patcher for 2..=4 macro-components
-                    let sol_cycles = if sol_cycles.len() >= 2 && sol_cycles.len() <= 4 {
+                    let sol_cycles = if cycle_repair && sol_cycles.len() >= 2 && sol_cycles.len() <= 4 {
                         if let Some(patched) = BoundaryAlternatingPatcher::try_patch_macro_hemispheres(&sol_cycles, &g, contractor, 4) {
                             println!("BoundaryAlternatingPatcher: patched macro-hemispheres from {} to {} cycles", sol_cycles.len(), patched.len());
                             if patched.len() == 1 && patched[0].len() == g.adjacency_list.len() {
@@ -833,7 +856,7 @@ fn cegar(
                     };
 
                     // Attempt Universal Giant-Cycle SAT Stitcher & Multi-Cycle Alternating Repair
-                    let sol_cycles = if sol_cycles.len() > 1 && sol_cycles.len() <= 150 {
+                    let sol_cycles = if cycle_repair && sol_cycles.len() > 1 && sol_cycles.len() <= 150 {
                         let protected_edges: HashSet<(i32, i32)> = contractor.chain_map.keys().copied().collect();
                         let stitched = GiantCycleStitcher::repair_until_fixed_point(&sol_cycles, &g, &protected_edges);
                         if stitched.len() < sol_cycles.len() {
@@ -861,7 +884,7 @@ fn cegar(
                     };
 
                     // 2-opt / 3-opt solution constructor
-                    let (block_clauses, mut _active_cycles) = if opt == 0 {
+                    let (block_clauses, mut _active_cycles) = if !cycle_repair || opt == 0 {
                         (get_blocking_clauses(&sol_cycles, encoder, &g, block_method, balanced), sol_cycles.clone())
                     } else if opt >= 1 {
                         let (clauses, cycles) = two_opt(&sol_cycles, encoder, &g, contractor, hub_registry, block_method, balanced, opt, three_opt);
@@ -888,7 +911,7 @@ fn cegar(
                     };
 
                     // Attempt exact SAT Macro-Patcher spanning tree / components when <= 60 active cycles remain
-                    if _active_cycles.len() >= 2 && _active_cycles.len() <= 60 {
+                    if cycle_repair && _active_cycles.len() >= 2 && _active_cycles.len() <= 60 {
                         let protected_edges: HashSet<(i32, i32)> = contractor.chain_map.keys().copied().collect();
                         let patched = SatMacroPatcher::try_patch_components(&_active_cycles, &g, &protected_edges);
                         if patched.len() == 1 && patched[0].len() == g.adjacency_list.len() {
@@ -912,7 +935,7 @@ fn cegar(
                     }
 
                     // Attempt MacroCrossoverSplicer when 2 <= _active_cycles.len() <= 6 (parity-breaking k-opt for macro-cycles)
-                    if _active_cycles.len() >= 2 && _active_cycles.len() <= 6 {
+                    if cycle_repair && _active_cycles.len() >= 2 && _active_cycles.len() <= 6 {
                         if let Some(spliced_tour) = MacroCrossoverSplicer::try_crossover_splice(&_active_cycles, &g, contractor) {
                             println!("MacroCrossoverSplicer: successfully spliced {} macro-cycles into single tour via auxiliary SAT crossover", _active_cycles.len());
                             let full_cycle = contractor.uncontract_cycle(&spliced_tour);
@@ -932,7 +955,7 @@ fn cegar(
                     }
 
                     // Attempt GadgetPathAbsorber satellite subcycle absorption
-                    if _active_cycles.len() >= 2 {
+                    if cycle_repair && _active_cycles.len() >= 2 {
                         let protected_edges: HashSet<(i32, i32)> = contractor.chain_map.keys().copied().collect();
                         let absorbed = GadgetPathAbsorber::try_absorb_gadgets(&_active_cycles, &g, &protected_edges);
                         if absorbed.len() == 1 && absorbed[0].len() == g.adjacency_list.len() {
@@ -957,7 +980,7 @@ fn cegar(
                     }
 
                     // Attempt Localized SAT Repair (LNS via backbone freezing) to eliminate last-mile thrashing
-                    if _active_cycles.len() >= 2 {
+                    if cycle_repair && _active_cycles.len() >= 2 {
                         if let Some(repaired_tour) = LocalizedSatRepair::try_repair(&_active_cycles, &g, &working_cnf, encoder, 5) {
                             println!("LocalizedSatRepair: successfully synthesized full Hamiltonian tour via Localized SAT LNS!");
                             let full_cycle = contractor.uncontract_cycle(&repaired_tour);
@@ -992,25 +1015,32 @@ fn cegar(
                             let mut macro_cycle = _active_cycles[m_idx].clone();
                             for (c_idx, subcycle) in _active_cycles.iter().enumerate() {
                                 if c_idx != m_idx && subcycle.len() <= 16 {
+                                    let repair_target = if cycle_repair {
+                                        Some(macro_cycle.as_slice())
+                                    } else {
+                                        None
+                                    };
                                     let gadget_res = GadgetInterfaceParityEngine::analyze_subcycle_gadget(
                                         subcycle,
                                         &g,
-                                        Some(&macro_cycle),
+                                        repair_target,
                                         encoder,
                                     );
 
                                     // 1. Direct splice check
-                                    if let Some(spliced) = gadget_res.direct_spliced_tour {
-                                        macro_cycle = spliced;
-                                        if macro_cycle.len() == total_nodes {
-                                            println!("GadgetInterfaceParity: direct spliced full tour found ({} vertices)", macro_cycle.len());
-                                            let full_cycle = contractor.uncontract_cycle(&macro_cycle);
-                                            let line = full_cycle.iter().map(|i| i.to_string()).collect::<Vec<String>>().join(" ");
-                                            println!();
-                                            println!("solution: ");
-                                            println!("{}\n", line);
-                                            println!("s SATISFIABLE");
-                                            return (count, clause_count, Some(full_cycle));
+                                    if cycle_repair {
+                                        if let Some(spliced) = gadget_res.direct_spliced_tour {
+                                            macro_cycle = spliced;
+                                            if macro_cycle.len() == total_nodes {
+                                                println!("GadgetInterfaceParity: direct spliced full tour found ({} vertices)", macro_cycle.len());
+                                                let full_cycle = contractor.uncontract_cycle(&macro_cycle);
+                                                let line = full_cycle.iter().map(|i| i.to_string()).collect::<Vec<String>>().join(" ");
+                                                println!();
+                                                println!("solution: ");
+                                                println!("{}\n", line);
+                                                println!("s SATISFIABLE");
+                                                return (count, clause_count, Some(full_cycle));
+                                            }
                                         }
                                     }
 
@@ -2487,6 +2517,3 @@ mod tests_blocking_enhancements {
         assert_eq!(res.unwrap(), SolverResult::Unsat);
     }
 }
-
-
-

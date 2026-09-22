@@ -28,6 +28,11 @@ CONDITION_NAMES = {
 }
 
 
+def record_group(record: Dict):
+    """Use a named profile when present, otherwise the legacy condition id."""
+    return record.get("variant", record.get("condition"))
+
+
 def load_records(jsonl_path: str) -> List[Dict]:
     """Load JSONL benchmark records from file."""
     records = []
@@ -125,6 +130,8 @@ def perform_wilcoxon_test(
     common_keys = sorted(list(set(map_a.keys()) & set(map_b.keys())))
     if not common_keys:
         return {
+            "name_a": name_a,
+            "name_b": name_b,
             "pairs_count": 0,
             "w_stat": None,
             "p_value": None,
@@ -188,6 +195,8 @@ def perform_wilcoxon_test(
         w_stat, p_value, conclusion = manual_wilcoxon_signed_rank(costs_a, costs_b)
 
     return {
+        "name_a": name_a,
+        "name_b": name_b,
         "pairs_count": len(common_keys),
         "w_stat": w_stat,
         "p_value": p_value,
@@ -198,13 +207,13 @@ def perform_wilcoxon_test(
     }
 
 
-def export_cactus_csv(records: List[Dict], csv_path: str, conditions: List[int]):
+def export_cactus_csv(records: List[Dict], csv_path: str, conditions: List):
     """Export sorted solved runtimes for each condition into cactus plot CSV format."""
     solved_times: Dict[int, List[float]] = {}
     for c in conditions:
         c_records = [
             r for r in records
-            if r["condition"] == c and r.get("status") == "SATISFIABLE" and r.get("verified") is True
+            if record_group(r) == c and r.get("status") == "SATISFIABLE" and r.get("verified") is True
         ]
         times = sorted([float(r.get("wall_time", r.get("total_time", 0.0))) for r in c_records])
         solved_times[c] = times
@@ -214,7 +223,10 @@ def export_cactus_csv(records: List[Dict], csv_path: str, conditions: List[int])
     os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        header = ["solved_instance_idx"] + [f"c{c}_time" for c in conditions]
+        header = ["solved_instance_idx"] + [
+            f"c{c}_time" if isinstance(c, int) else f"{c}_time"
+            for c in conditions
+        ]
         writer.writerow(header)
 
         for i in range(max_solved):
@@ -231,11 +243,11 @@ def export_cactus_csv(records: List[Dict], csv_path: str, conditions: List[int])
 
 def analyze_records(records: List[Dict], default_timeout: float) -> Tuple[List[Dict], Dict]:
     """Calculate summary statistics per condition."""
-    conditions = sorted(list(set(r["condition"] for r in records)))
+    conditions = sorted(set(record_group(r) for r in records), key=str)
     summary = []
 
     for c in conditions:
-        cond_records = [r for r in records if r["condition"] == c]
+        cond_records = [r for r in records if record_group(r) == c]
         total_runs = len(cond_records)
 
         solved_records = [
@@ -247,7 +259,9 @@ def analyze_records(records: List[Dict], default_timeout: float) -> Tuple[List[D
         unsat_count = sum(1 for r in cond_records if r.get("status") == "UNSATISFIABLE")
         error_count = sum(
             1 for r in cond_records
-            if r.get("status") == "ERROR" or (r.get("status") == "SATISFIABLE" and r.get("verified") is not True)
+            if str(r.get("status", "")).startswith("INVALID")
+            or r.get("status") == "ERROR"
+            or (r.get("status") == "SATISFIABLE" and r.get("verified") is not True)
         )
 
         solve_rate = (solved_count / total_runs * 100.0) if total_runs > 0 else 0.0
@@ -260,7 +274,7 @@ def analyze_records(records: List[Dict], default_timeout: float) -> Tuple[List[D
 
         summary.append({
             "condition": c,
-            "name": CONDITION_NAMES.get(c, f"C{c}"),
+            "name": cond_records[0].get("condition_name", CONDITION_NAMES.get(c, str(c))),
             "runs": total_runs,
             "solved": solved_count,
             "timeouts": timeout_count,
@@ -273,7 +287,7 @@ def analyze_records(records: List[Dict], default_timeout: float) -> Tuple[List[D
             "std_solved_time": std_time,
         })
 
-    return summary, {c: [r for r in records if r["condition"] == c] for c in conditions}
+    return summary, {c: [r for r in records if record_group(r) == c] for c in conditions}
 
 
 def print_markdown_report(
@@ -285,13 +299,14 @@ def print_markdown_report(
     print("\n# SAT Benchmark & Multi-Seed Ablation Report")
     print("## 1. Summary Performance Matrix (PAR-2 & Solved Rates)\n")
 
-    print("| Condition | Description | Runs | Solved | Timeouts | Unsat/Err | Solve Rate (%) | Mean Solved (s) | Median Solved (s) | PAR-2 Score (s) |")
+    print("| Condition/Variant | Description | Runs | Solved | Timeouts | Unsat/Err | Solve Rate (%) | Mean Solved (s) | Median Solved (s) | PAR-2 Score (s) |")
     print("|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|")
     for s in summary:
         mean_str = f"{s['mean_solved_time']:.3f}" if not math.isnan(s['mean_solved_time']) else "N/A"
         median_str = f"{s['median_solved_time']:.3f}" if not math.isnan(s['median_solved_time']) else "N/A"
+        group_label = f"C{s['condition']}" if isinstance(s['condition'], int) else str(s['condition'])
         print(
-            f"| C{s['condition']} | {s['name']} | "
+            f"| {group_label} | {s['name']} | "
             f"{s['runs']} | {s['solved']} | {s['timeouts']} | {s['unsat'] + s['errors']} | "
             f"{s['solve_rate']:.1f}% | {mean_str} | {median_str} | "
             f"**{s['par2']:.3f}** |"
@@ -301,14 +316,14 @@ def print_markdown_report(
     if wilcoxon_res and wilcoxon_res.get("pairs_count", 0) > 0:
         w_str = f"{wilcoxon_res['w_stat']:.2f}" if wilcoxon_res['w_stat'] is not None else "N/A"
         p_str = f"{wilcoxon_res['p_value']:.4e}" if wilcoxon_res['p_value'] is not None else "N/A"
-        print(f"- **Comparison**: Full Hybrid ($C_3$) vs Baseline ($C_0$)")
+        print(f"- **Comparison**: {wilcoxon_res['name_a']} vs {wilcoxon_res['name_b']}")
         print(f"- **Paired Instances**: {wilcoxon_res['pairs_count']}")
-        print(f"- **Wins / Ties / Losses**: $C_3$ won {wilcoxon_res['wins_a']} | Ties {wilcoxon_res['ties']} | $C_0$ won {wilcoxon_res['wins_b']}")
+        print(f"- **Wins / Ties / Losses**: {wilcoxon_res['name_a']} won {wilcoxon_res['wins_a']} | Ties {wilcoxon_res['ties']} | {wilcoxon_res['name_b']} won {wilcoxon_res['wins_b']}")
         print(f"- **Wilcoxon W-statistic**: {w_str}")
         print(f"- **p-value**: {p_str}")
         print(f"- **Outcome (alpha = 0.05)**: **{wilcoxon_res['conclusion']}**")
     else:
-        print("Paired Wilcoxon comparison between C3 and C0 could not be performed (insufficient overlapping instances).")
+        print("Paired Wilcoxon comparison could not be performed (insufficient overlapping instances).")
 
     print("\n## 3. Cactus Plot Data Export\n")
     print(f"- Cactus plot coordinates successfully exported to: `{cactus_out}`")
@@ -335,6 +350,8 @@ def main():
         default=1800.0,
         help="Default timeout threshold for PAR-2 penalty (default: 1800.0)",
     )
+    parser.add_argument("--candidate", help="Candidate condition id or named profile.")
+    parser.add_argument("--baseline", help="Baseline condition id or named profile.")
 
     args = parser.parse_args()
 
@@ -353,12 +370,29 @@ def main():
     export_cactus_csv(records, cactus_path, conditions)
 
     wilcoxon_res = None
-    if 3 in grouped_records and 0 in grouped_records:
+    candidate = args.candidate
+    baseline = args.baseline
+    if candidate is None and baseline is None:
+        if "proposed" in grouped_records and "proposed-no-decomposition" in grouped_records:
+            candidate = "proposed"
+            baseline = "proposed-no-decomposition"
+        elif 3 in grouped_records and 0 in grouped_records:
+            candidate = 3
+            baseline = 0
+    elif candidate is None or baseline is None:
+        parser.error("--candidate and --baseline must be provided together")
+
+    if isinstance(candidate, str) and candidate.isdigit() and int(candidate) in grouped_records:
+        candidate = int(candidate)
+    if isinstance(baseline, str) and baseline.isdigit() and int(baseline) in grouped_records:
+        baseline = int(baseline)
+
+    if candidate in grouped_records and baseline in grouped_records:
         wilcoxon_res = perform_wilcoxon_test(
-            grouped_records[3],
-            grouped_records[0],
-            name_a="C3",
-            name_b="C0",
+            grouped_records[candidate],
+            grouped_records[baseline],
+            name_a=str(candidate),
+            name_b=str(baseline),
             default_timeout=args.timeout,
         )
 

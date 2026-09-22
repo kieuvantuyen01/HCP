@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "expected_status": "SATISFIABLE",
+  "reference_profile": "proposed",
+  "paired_factors": {
+    "proposed-no-decomposition": "structural_decomposition",
+    "proposed-no-contraction": "degree2_contraction",
+    "proposed-no-repair": "cycle_repair"
+  },
+  "notes": "Each ablation profile differs from Proposed in exactly one boolean switch. All profiles use the same binary, topology classifier, global encoding selection, CaDiCaL backend, refinement cuts, timeout, and independent tour verification.",
+  "variants": [
+    {
+      "name": "Proposed",
+      "slug": "proposed",
+      "arguments": [
+        "--auto", "1",
+        "--structural-decomposition", "1",
+        "--degree2-contraction", "1",
+        "--cycle-repair", "1",
+        "--macro-gadget", "0",
+        "--bounded-freezer", "0",
+        "--alternating-engine", "1"
+      ]
+    },
+    {
+      "name": "Proposed–NoDecomposition",
+      "slug": "proposed-no-decomposition",
+      "arguments": [
+        "--auto", "1",
+        "--structural-decomposition", "0",
+        "--degree2-contraction", "1",
+        "--cycle-repair", "1",
+        "--macro-gadget", "0",
+        "--bounded-freezer", "0",
+        "--alternating-engine", "1"
+      ]
+    },
+    {
+      "name": "Proposed–NoContraction",
+      "slug": "proposed-no-contraction",
+      "arguments": [
+        "--auto", "1",
+        "--structural-decomposition", "1",
+        "--degree2-contraction", "0",
+        "--cycle-repair", "1",
+        "--macro-gadget", "0",
+        "--bounded-freezer", "0",
+        "--alternating-engine", "1"
+      ]
+    },
+    {
+      "name": "Proposed–NoRepair",
+      "slug": "proposed-no-repair",
+      "arguments": [
+        "--auto", "1",
+        "--structural-decomposition", "1",
+        "--degree2-contraction", "1",
+        "--cycle-repair", "0",
+        "--macro-gadget", "0",
+        "--bounded-freezer", "0",
+        "--alternating-engine", "1"
+      ]
+    }
+  ]
+}

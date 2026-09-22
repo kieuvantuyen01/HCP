@@ -21,6 +21,22 @@ impl Degree2Contractor {
         }
     }
 
+    /// Return an identity contractor for a monolithic solve.
+    ///
+    /// This preserves the solver interface while leaving the graph and every
+    /// tour unchanged. The matched no-decomposition profile uses it so that
+    /// structural contraction is the only changed factor.
+    pub fn identity(g: &Graph) -> Self {
+        let total_v = g.adjacency_list.len();
+        Self {
+            chain_map: HashMap::new(),
+            original_vertices_count: total_v,
+            contracted_vertices_count: total_v,
+            is_direct_cycle: None,
+            is_infeasible: false,
+        }
+    }
+
     pub fn contract(g: &Graph) -> (Graph, Degree2Contractor) {
         let total_v = g.adjacency_list.len();
         let mut adj: HashMap<i32, HashSet<i32>> = HashMap::new();
@@ -421,5 +437,17 @@ mod tests {
         let g = build_test_graph(&edges, 5);
         let (_, contractor) = Degree2Contractor::contract(&g);
         assert!(contractor.is_infeasible);
+    }
+
+    #[test]
+    fn test_identity_contractor_leaves_tour_unchanged() {
+        let edges = vec![(1, 2), (2, 3), (3, 1)];
+        let g = build_test_graph(&edges, 3);
+        let contractor = Degree2Contractor::identity(&g);
+
+        assert!(contractor.chain_map.is_empty());
+        assert_eq!(contractor.original_vertices_count, 3);
+        assert_eq!(contractor.contracted_vertices_count, 3);
+        assert_eq!(contractor.uncontract_cycle(&[1, 2, 3]), vec![1, 2, 3]);
     }
 }

@@ -30,6 +30,7 @@ impl Default for TwoTierSolverOptions {
 pub struct TwoTierOptions {
     pub timeout_secs: f64,
     pub output_tour: Option<String>,
+    pub cycle_repair: bool,
 }
 
 impl Default for TwoTierOptions {
@@ -37,6 +38,7 @@ impl Default for TwoTierOptions {
         Self {
             timeout_secs: 1800.0,
             output_tour: None,
+            cycle_repair: true,
         }
     }
 }
@@ -48,7 +50,7 @@ impl TwoTierOrchestrator {
         let opt = TwoTierSolverOptions {
             timeout_secs: options.timeout_secs,
             max_iterations: 50_000,
-            enable_patching: true,
+            enable_patching: options.cycle_repair,
             output_path: options.output_tour.clone(),
         };
         solve_graph_two_tier(g, &opt)

@@ -10,6 +10,9 @@ use std::time::Instant;
 #[derive(Debug, Clone)]
 pub struct HybridOptions {
     pub auto_mode: bool,
+    pub structural_decomposition: bool,
+    pub degree2_contraction: bool,
+    pub cycle_repair: bool,
     pub timeout_secs: f64,
     pub output_tour: Option<String>,
     pub macro_gadget: bool,
@@ -21,6 +24,9 @@ impl Default for HybridOptions {
     fn default() -> Self {
         Self {
             auto_mode: true,
+            structural_decomposition: true,
+            degree2_contraction: true,
+            cycle_repair: true,
             timeout_secs: 1800.0,
             output_tour: None,
             macro_gadget: false,
@@ -71,12 +77,25 @@ impl HybridOrchestrator {
             "AutoClassifier: N={}, M={}, Density={:.2}, Hubs={} -> Track: {:?}",
             features.n, features.m, features.density, features.hub_count, track
         );
+        println!(
+            "Structural decomposition: {}",
+            if options.structural_decomposition { "enabled" } else { "disabled" }
+        );
+        println!(
+            "Degree-2 contraction: {}",
+            if options.degree2_contraction { "enabled" } else { "disabled" }
+        );
+        println!(
+            "Cycle repair: {}",
+            if options.cycle_repair { "enabled" } else { "disabled" }
+        );
 
         let tour = match track {
-            TargetTrack::B1LadderTwoTier => {
+            TargetTrack::B1LadderTwoTier if options.structural_decomposition => {
                 let tt_opts = TwoTierOptions {
                     timeout_secs: options.timeout_secs,
                     output_tour: options.output_tour.clone(),
+                    cycle_repair: options.cycle_repair,
                 };
                 let res = TwoTierOrchestrator::solve(g, &tt_opts);
                 if res.is_some() {
@@ -85,6 +104,10 @@ impl HybridOrchestrator {
                     println!("TwoTier decomposition finished without tour. Falling back to Global CEGAR solver...");
                     Self::solve_global(g, options, TargetTrack::GeneralCaDiCaL)
                 }
+            }
+            TargetTrack::B1LadderTwoTier => {
+                println!("TwoTier decomposition skipped by experimental profile; using the matched global CEGAR path.");
+                Self::solve_global(g, options, TargetTrack::GeneralCaDiCaL)
             }
             _ => Self::solve_global(g, options, track),
         };
@@ -114,7 +137,14 @@ impl HybridOrchestrator {
         if pruned > 0 {
             println!("Pruned {} degree-2 triangle shortcut edges", pruned);
         }
-        let (contracted_g, contractor) = Degree2Contractor::contract(&uncontracted_g);
+        let (contracted_g, contractor) = if options.degree2_contraction {
+            Degree2Contractor::contract(&uncontracted_g)
+        } else {
+            (
+                uncontracted_g.clone(),
+                Degree2Contractor::identity(&uncontracted_g),
+            )
+        };
 
         if let Some(cycle) = contractor.is_direct_cycle.clone() {
             println!("Graph is a single 2-regular Hamiltonian cycle.");
@@ -166,7 +196,7 @@ impl HybridOrchestrator {
         match track {
             TargetTrack::SnarkKeyBridge => {
                 // CaDiCaL encoding: -e 0 -b 3 -l 1 --three-opt 1 --set-configration 1
-                hcp_solver::solve_hamilton(
+                hcp_solver::solve_hamilton_with_decomposition(
                     contracted_g,
                     &contractor,
                     &hub_reg,
@@ -177,11 +207,13 @@ impl HybridOrchestrator {
                     mg,
                     bf,
                     alt,
+                    options.structural_decomposition,
+                    options.cycle_repair,
                 )
             }
             TargetTrack::GadgetInterfaceParity | TargetTrack::B2SinzChainSMT => {
                 // Sinz encoding: -e 1 -b 3 -y 2 -t 3 -l 1 --three-opt 1 --set-configration 1
-                hcp_solver::solve_hamilton(
+                hcp_solver::solve_hamilton_with_decomposition(
                     contracted_g,
                     &contractor,
                     &hub_reg,
@@ -192,11 +224,13 @@ impl HybridOrchestrator {
                     mg,
                     bf,
                     alt,
+                    options.structural_decomposition,
+                    options.cycle_repair,
                 )
             }
             _ => {
                 // General CaDiCaL encoding: -e 0 -b 3 -l 1
-                hcp_solver::solve_hamilton(
+                hcp_solver::solve_hamilton_with_decomposition(
                     contracted_g,
                     &contractor,
                     &hub_reg,
@@ -207,6 +241,8 @@ impl HybridOrchestrator {
                     mg,
                     bf,
                     alt,
+                    options.structural_decomposition,
+                    options.cycle_repair,
                 )
             }
         }
