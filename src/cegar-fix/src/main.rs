@@ -1,5 +1,5 @@
 use cegar_fix::pipeline::options::Options;
-use cegar_fix::pipeline::solver_pipeline::{run_batch, solve_single_graph};
+use cegar_fix::pipeline::solver_pipeline::{run_batch, solve_single_graph_with_config};
 use std::time::Instant;
 
 fn main() {
@@ -9,15 +9,26 @@ fn main() {
 
     if opts.batch_mode {
         println!(
-            "Running batch solver for graphs {}..={} with {} workers (timeout: {:.1}s)...",
-            opts.batch_start, opts.batch_end, opts.workers, opts.timeout
+            "Running batch solver for graphs {}..={} with {} workers (timeout: {:.1}s, ablation: {}, seed: {})...",
+            opts.batch_start,
+            opts.batch_end,
+            opts.workers,
+            opts.timeout,
+            opts.ablation,
+            opts.seed,
         );
         run_batch(&opts);
         return;
     }
 
     println!("solve {}", opts.graph_file);
-    match solve_single_graph(&opts.graph_file, opts.timeout, opts.output_tour_file.as_deref()) {
+    match solve_single_graph_with_config(
+        &opts.graph_file,
+        opts.timeout,
+        opts.output_tour_file.as_deref(),
+        opts.ablation,
+        opts.seed,
+    ) {
         Ok((tour, elapsed, _vertices)) => {
             println!("s SATISFIABLE");
             println!("solution: ");

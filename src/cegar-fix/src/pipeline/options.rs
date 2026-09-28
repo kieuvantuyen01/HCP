@@ -1,3 +1,4 @@
+use crate::pipeline::ablation::AblationConfig;
 use clap::{App, Arg};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -10,6 +11,8 @@ pub struct Options {
     pub graph_file: String,
     pub timeout: f64,
     pub output_tour_file: Option<String>,
+    pub ablation: AblationConfig,
+    pub seed: i32,
 }
 
 impl Default for Options {
@@ -23,6 +26,8 @@ impl Default for Options {
             graph_file: String::new(),
             timeout: 1800.0,
             output_tour_file: None,
+            ablation: AblationConfig::Full,
+            seed: 1,
         }
     }
 }
@@ -49,9 +54,19 @@ impl Options {
 
     pub fn try_from_matches(matches: &clap::ArgMatches) -> Result<Self, String> {
         let timeout = matches.value_of_t::<f64>("timeout").unwrap_or(1800.0);
-        let output_tour_file = matches
-            .value_of("output-tour")
-            .map(|s| s.to_string());
+        let output_tour_file = matches.value_of("output-tour").map(|s| s.to_string());
+        let ablation = matches
+            .value_of("ablation")
+            .unwrap_or("full")
+            .parse::<AblationConfig>()?;
+        let seed = matches
+            .value_of("seed")
+            .unwrap_or("1")
+            .parse::<i32>()
+            .map_err(|_| "Invalid --seed; expected a positive 32-bit integer".to_string())?;
+        if seed <= 0 {
+            return Err("Invalid --seed; expected a positive 32-bit integer".to_string());
+        }
 
         // Check if batch mode is requested
         if let Some(mut batch_vals) = matches.values_of("batch") {
@@ -83,6 +98,8 @@ impl Options {
                 graph_file: String::new(),
                 timeout,
                 output_tour_file,
+                ablation,
+                seed,
             });
         }
 
@@ -108,6 +125,8 @@ impl Options {
             graph_file,
             timeout,
             output_tour_file,
+            ablation,
+            seed,
         })
     }
 }
@@ -358,9 +377,18 @@ pub fn get_options_app() -> clap::App<'static> {
         .arg(
             Arg::with_name("ablation")
                 .long("ablation")
-                .value_name("n")
-                .help("Ablation matrix experimental condition")
-                .takes_value(true),
+                .value_name("NAME")
+                .help("Ablation: full, no-decomposition, no-dispatch, no-series, no-two-cut, no-repair, undirected-cubic, or one-alternating-worker")
+                .takes_value(true)
+                .default_value("full"),
+        )
+        .arg(
+            Arg::with_name("seed")
+                .long("seed")
+                .value_name("N")
+                .help("Positive CaDiCaL random seed (default: 1)")
+                .takes_value(true)
+                .default_value("1"),
         )
         .arg(
             Arg::with_name("alternating-engine")
@@ -403,6 +431,8 @@ mod tests {
         assert_eq!(opts.graph_file, "test.col");
         assert_eq!(opts.timeout, 15.0);
         assert!(!opts.batch_mode);
+        assert_eq!(opts.ablation, AblationConfig::Full);
+        assert_eq!(opts.seed, 1);
     }
 
     #[test]
@@ -419,5 +449,23 @@ mod tests {
         assert_eq!(opts.batch_end, 10);
         assert_eq!(opts.workers, 4);
     }
-}
 
+    #[test]
+    fn test_options_named_ablation_and_seed() {
+        let app = get_options_app();
+        let matches = app
+            .try_get_matches_from(vec![
+                "cegar-fix",
+                "-i",
+                "test.col",
+                "--ablation",
+                "Proposed-NoRepair",
+                "--seed",
+                "42",
+            ])
+            .unwrap();
+        let opts = Options::try_from_matches(&matches).unwrap();
+        assert_eq!(opts.ablation, AblationConfig::NoRepair);
+        assert_eq!(opts.seed, 42);
+    }
+}

@@ -9,6 +9,21 @@ use rustsat_cadical::CaDiCaL;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CegarConfig {
+    pub enable_repair: bool,
+    pub seed: i32,
+}
+
+impl Default for CegarConfig {
+    fn default() -> Self {
+        Self {
+            enable_repair: true,
+            seed: 1,
+        }
+    }
+}
+
 /// Extracts disjoint Eulerian cycles from an active adjacency map where every vertex has degree 2.
 fn extract_subcycles(nodes: &[i32], active_adj: &HashMap<i32, Vec<i32>>) -> Vec<Vec<i32>> {
     let mut visited = HashSet::new();
@@ -55,7 +70,15 @@ fn extract_subcycles(nodes: &[i32], active_adj: &HashMap<i32, Vec<i32>>) -> Vec<
 
 /// Solves Hamiltonian cycle on `g` using deterministic SAT-CEGAR with 2-opt merging and DFJ cuts.
 pub fn solve_cycle(g: &Graph, timeout_secs: f64) -> Result<Vec<i32>, String> {
-    solve_cycle_with_forced_edges(g, timeout_secs, &HashSet::new())
+    solve_cycle_with_config(g, timeout_secs, CegarConfig::default())
+}
+
+pub fn solve_cycle_with_config(
+    g: &Graph,
+    timeout_secs: f64,
+    config: CegarConfig,
+) -> Result<Vec<i32>, String> {
+    solve_cycle_with_forced_edges_and_config(g, timeout_secs, &HashSet::new(), config)
 }
 
 /// Solves Hamiltonian cycle on `g` requiring all edges in `forced_edges` to be selected.
@@ -63,6 +86,15 @@ pub fn solve_cycle_with_forced_edges(
     g: &Graph,
     timeout_secs: f64,
     forced_edges: &HashSet<(i32, i32)>,
+) -> Result<Vec<i32>, String> {
+    solve_cycle_with_forced_edges_and_config(g, timeout_secs, forced_edges, CegarConfig::default())
+}
+
+pub fn solve_cycle_with_forced_edges_and_config(
+    g: &Graph,
+    timeout_secs: f64,
+    forced_edges: &HashSet<(i32, i32)>,
+    config: CegarConfig,
 ) -> Result<Vec<i32>, String> {
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
     let mut nodes: Vec<i32> = g.adjacency_list.keys().copied().collect();
@@ -102,6 +134,7 @@ pub fn solve_cycle_with_forced_edges(
     }
 
     let mut solver = create_solver_with_deadline(deadline);
+    let _ = solver.set_option("seed", config.seed.max(1));
     let mut base_clauses: Vec<Clause> = Vec::new();
 
     // Add exact degree-2 constraints for each vertex
@@ -232,7 +265,7 @@ pub fn solve_cycle_with_forced_edges(
                 }
 
                 // Heuristic 2-opt/3-opt merge acceleration for 2..=32 cycles
-                if cycles.len() >= 2 && cycles.len() <= 32 {
+                if config.enable_repair && cycles.len() >= 2 && cycles.len() <= 32 {
                     if let Some(merged) = safe_2opt_merge(&cycles, &adj_sets, &forbidden_edges) {
                         if merged.len() == n {
                             let (ok, _) = TourVerifier::verify(g, &merged);
@@ -314,6 +347,24 @@ pub fn solve_path_with_forced_edges(
     timeout_secs: f64,
     forced_edges: &HashSet<(i32, i32)>,
 ) -> Result<Vec<i32>, String> {
+    solve_path_with_forced_edges_and_config(
+        g,
+        port_u,
+        port_v,
+        timeout_secs,
+        forced_edges,
+        CegarConfig::default(),
+    )
+}
+
+pub fn solve_path_with_forced_edges_and_config(
+    g: &Graph,
+    port_u: i32,
+    port_v: i32,
+    timeout_secs: f64,
+    forced_edges: &HashSet<(i32, i32)>,
+    config: CegarConfig,
+) -> Result<Vec<i32>, String> {
     if port_u == port_v {
         return Err("Path ports must be distinct".to_string());
     }
@@ -325,7 +376,8 @@ pub fn solve_path_with_forced_edges(
     augmented_g.add_edge(dummy_w, port_u);
     augmented_g.add_edge(dummy_w, port_v);
 
-    let cycle = solve_cycle_with_forced_edges(&augmented_g, timeout_secs, forced_edges)?;
+    let cycle =
+        solve_cycle_with_forced_edges_and_config(&augmented_g, timeout_secs, forced_edges, config)?;
 
     let dummy_pos = cycle
         .iter()
@@ -452,7 +504,10 @@ fn merge_two_cycles_3opt(
 
     for idx2 in 0..n2 {
         let x = c2[idx2];
-        for &(y, rev) in &[(c2[(idx2 + 1) % n2], false), (c2[(idx2 + n2 - 1) % n2], true)] {
+        for &(y, rev) in &[
+            (c2[(idx2 + 1) % n2], false),
+            (c2[(idx2 + n2 - 1) % n2], true),
+        ] {
             let e_xy = (x.min(y), x.max(y));
             if forbidden_delete.contains(&e_xy) {
                 continue;
@@ -578,11 +633,13 @@ fn safe_2opt_merge(
         let mut merge_step = None;
         'search_3opt: for i in 0..num_cycles {
             for j in (i + 1)..num_cycles {
-                if let Some(res) = merge_two_cycles_3opt(&curr[i], &curr[j], adj, forbidden_delete) {
+                if let Some(res) = merge_two_cycles_3opt(&curr[i], &curr[j], adj, forbidden_delete)
+                {
                     merge_step = Some((i, j, res));
                     break 'search_3opt;
                 }
-                if let Some(res) = merge_two_cycles_3opt(&curr[j], &curr[i], adj, forbidden_delete) {
+                if let Some(res) = merge_two_cycles_3opt(&curr[j], &curr[i], adj, forbidden_delete)
+                {
                     merge_step = Some((j, i, res));
                     break 'search_3opt;
                 }
@@ -603,7 +660,8 @@ fn safe_2opt_merge(
                 let mut step_2opt = None;
                 'search_inner: for a in 0..n_c {
                     for b in (a + 1)..n_c {
-                        if let Some(r) = merge_two_cycles(&curr[a], &curr[b], adj, forbidden_delete) {
+                        if let Some(r) = merge_two_cycles(&curr[a], &curr[b], adj, forbidden_delete)
+                        {
                             step_2opt = Some((a, b, r));
                             break 'search_inner;
                         }
@@ -626,11 +684,7 @@ fn safe_2opt_merge(
 }
 
 /// Sequential counter encoding for at-most-2 cardinality constraint.
-pub fn add_at_most_2(
-    solver: &mut CaDiCaL,
-    var_mgr: &mut BasicVarManager,
-    edge_lits: &[Lit],
-) {
+pub fn add_at_most_2(solver: &mut CaDiCaL, var_mgr: &mut BasicVarManager, edge_lits: &[Lit]) {
     let n = edge_lits.len();
     if n <= 2 {
         return;
@@ -670,4 +724,3 @@ pub fn add_at_most_2(
     // Final clause for last literal
     let _ = solver.add_clause(clause![!edge_lits[n - 1], !s[n - 2][1]]);
 }
-

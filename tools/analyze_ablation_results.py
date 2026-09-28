@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-SAT Benchmark Telemetry Analyzer & Statistical Significance Validator.
-
-Performs:
-1. SAT Competition PAR-2 score calculation (2x timeout penalty)
-2. Mean & Median runtime analysis on solved instances
-3. Paired Wilcoxon Signed-Rank Test (C3 vs C0) with SciPy and robust fallback
-4. Cumulative Cactus plot CSV export (c0_time, c1_time, c2_time, c3_time)
-5. Comprehensive Markdown report formatting
-"""
+"""Analyze named HCP ablations with PAR-2, cactus data, and paired tests."""
 
 import argparse
 import csv
@@ -20,350 +11,226 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 
-CONDITION_NAMES = {
-    0: "Baseline (C0)",
-    1: "Baseline + H2-Refined (C1)",
-    2: "Baseline + H1 (C2)",
-    3: "Full Hybrid H1+H2 (C3)",
-}
+REFERENCE = "full"
 
 
-def load_records(jsonl_path: str) -> List[Dict]:
-    """Load JSONL benchmark records from file."""
+def load_records(path: str) -> List[Dict]:
     records = []
-    if not os.path.exists(jsonl_path):
-        raise FileNotFoundError(f"Results file not found: {jsonl_path}")
-    with open(jsonl_path, 'r', encoding='utf-8') as f:
-        for line_no, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
+    with open(path, "r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
                 continue
             try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError as e:
-                print(f"Warning: Failed to parse JSON on line {line_no}: {e}", file=sys.stderr)
+                record = json.loads(line)
+                record["condition"] = str(record["condition"])
+                records.append(record)
+            except (json.JSONDecodeError, KeyError) as error:
+                print(f"Skipping line {line_number}: {error}", file=sys.stderr)
     return records
 
 
-def compute_par2(records: List[Dict], default_timeout: float) -> Tuple[float, List[float]]:
-    """
-    Compute PAR-2 score:
-    PAR-2 = 1/N * sum(t_i if solved else 2 * T_timeout)
-    """
-    if not records:
-        return 0.0, []
-
-    costs = []
-    for r in records:
-        timeout_limit = float(r.get("timeout_limit", default_timeout))
-        # Instance is strictly considered solved only if SATISFIABLE and certified verified
-        is_solved = (r.get("status") == "SATISFIABLE" and r.get("verified") is True)
-        if is_solved:
-            # Use wall_time or total_time
-            t = float(r.get("wall_time", r.get("total_time", timeout_limit)))
-            costs.append(min(t, timeout_limit))
-        else:
-            costs.append(2.0 * timeout_limit)
-
-    return sum(costs) / len(costs), costs
+def solved(record: Dict) -> bool:
+    return record.get("status") == "SATISFIABLE" and record.get("verified") is True
 
 
-def manual_wilcoxon_signed_rank(x: List[float], y: List[float]) -> Tuple[float, float, str]:
-    """
-    Fallback paired Wilcoxon signed-rank test calculation.
-    Compares x (e.g. C3) vs y (e.g. C0).
-    """
-    diffs = [b - a for a, b in zip(x, y)]
-    non_zero = [(abs(d), 1 if d > 0 else -1) for d in diffs if abs(d) > 1e-9]
-    if not non_zero:
-        return 0.0, 1.0, "Identical performance across all paired instances (no differences)"
-
-    sorted_diffs = sorted(non_zero, key=lambda item: item[0])
-    ranks = []
-    i = 0
-    n = len(sorted_diffs)
-    while i < n:
-        j = i
-        while j < n and abs(sorted_diffs[j][0] - sorted_diffs[i][0]) < 1e-9:
-            j += 1
-        avg_rank = (i + 1 + j) / 2.0
-        for k in range(i, j):
-            ranks.append((avg_rank, sorted_diffs[k][1]))
-        i = j
-
-    w_pos = sum(r for r, s in ranks if s > 0)
-    w_neg = sum(r for r, s in ranks if s < 0)
-    w_stat = min(w_pos, w_neg)
-
-    n_pts = len(ranks)
-    mean_w = n_pts * (n_pts + 1) / 4.0
-    var_w = n_pts * (n_pts + 1) * (2 * n_pts + 1) / 24.0
-
-    if var_w > 0:
-        z = (w_stat - mean_w) / math.sqrt(var_w)
-        p_val = 2.0 * (1.0 - 0.5 * (1.0 + math.erf(abs(z) / math.sqrt(2.0))))
-        p_val = max(0.0, min(1.0, p_val))
-    else:
-        p_val = 1.0
-
-    conclusion = "Statistically Significant (p < 0.05)" if p_val < 0.05 else "Not Statistically Significant (p >= 0.05)"
-    return w_stat, p_val, conclusion
+def par2_cost(record: Dict, default_timeout: float) -> float:
+    timeout = float(record.get("timeout_limit", default_timeout))
+    return min(float(record.get("wall_time", timeout)), timeout) if solved(record) else 2 * timeout
 
 
-def perform_wilcoxon_test(
-    records_a: List[Dict],
-    records_b: List[Dict],
-    name_a: str,
-    name_b: str,
+def compute_par2(records: List[Dict], default_timeout: float) -> float:
+    return statistics.mean(par2_cost(record, default_timeout) for record in records)
+
+
+def normal_approx_wilcoxon(x: List[float], y: List[float]) -> Tuple[float, float]:
+    differences = [a - b for a, b in zip(x, y) if abs(a - b) > 1e-12]
+    if not differences:
+        return 0.0, 1.0
+    ordered = sorted(enumerate(differences), key=lambda pair: abs(pair[1]))
+    ranks = [0.0] * len(ordered)
+    index = 0
+    while index < len(ordered):
+        end = index + 1
+        while end < len(ordered) and abs(abs(ordered[end][1]) - abs(ordered[index][1])) < 1e-12:
+            end += 1
+        average_rank = (index + 1 + end) / 2
+        for position in range(index, end):
+            ranks[position] = average_rank
+        index = end
+    positive = sum(rank for rank, (_, diff) in zip(ranks, ordered) if diff > 0)
+    negative = sum(rank for rank, (_, diff) in zip(ranks, ordered) if diff < 0)
+    statistic = min(positive, negative)
+    n = len(ordered)
+    mean = n * (n + 1) / 4
+    variance = n * (n + 1) * (2 * n + 1) / 24
+    z_value = (statistic - mean) / math.sqrt(variance) if variance else 0.0
+    p_value = math.erfc(abs(z_value) / math.sqrt(2))
+    return statistic, min(1.0, max(0.0, p_value))
+
+
+def paired_test(
+    reference_records: List[Dict],
+    ablation_records: List[Dict],
     default_timeout: float,
 ) -> Dict:
-    """Perform paired Wilcoxon signed-rank test on matched instances (graph, seed)."""
-    # Key by (graph, seed)
-    map_a = {(r["graph"], r["seed"]): r for r in records_a}
-    map_b = {(r["graph"], r["seed"]): r for r in records_b}
+    ref = {(record["graph"], int(record["seed"])): record for record in reference_records}
+    abl = {(record["graph"], int(record["seed"])): record for record in ablation_records}
+    common = sorted(set(ref) & set(abl))
+    ref_costs = [par2_cost(ref[key], default_timeout) for key in common]
+    abl_costs = [par2_cost(abl[key], default_timeout) for key in common]
+    if not common:
+        return {"pairs": 0, "statistic": None, "p_raw": None,
+                "reference_wins": 0, "ablation_wins": 0, "ties": 0}
 
-    common_keys = sorted(list(set(map_a.keys()) & set(map_b.keys())))
-    if not common_keys:
-        return {
-            "pairs_count": 0,
-            "w_stat": None,
-            "p_value": None,
-            "conclusion": "No common instances found for paired test",
-            "wins_a": 0,
-            "wins_b": 0,
-            "ties": 0,
-        }
-
-    costs_a = []
-    costs_b = []
-    wins_a = 0
-    wins_b = 0
-    ties = 0
-
-    for k in common_keys:
-        ra = map_a[k]
-        rb = map_b[k]
-
-        timeout_a = float(ra.get("timeout_limit", default_timeout))
-        timeout_b = float(rb.get("timeout_limit", default_timeout))
-
-        cost_a = float(ra.get("wall_time", ra.get("total_time", timeout_a))) if (ra.get("status") == "SATISFIABLE" and ra.get("verified") is True) else 2.0 * timeout_a
-        cost_b = float(rb.get("wall_time", rb.get("total_time", timeout_b))) if (rb.get("status") == "SATISFIABLE" and rb.get("verified") is True) else 2.0 * timeout_b
-
-        costs_a.append(cost_a)
-        costs_b.append(cost_b)
-
-        if cost_a < cost_b - 1e-6:
-            wins_a += 1
-        elif cost_b < cost_a - 1e-6:
-            wins_b += 1
-        else:
-            ties += 1
-
-    diffs = [ca - cb for ca, cb in zip(costs_a, costs_b)]
-    non_zero_diffs = [d for d in diffs if abs(d) > 1e-9]
-
-    w_stat: Optional[float] = None
-    p_value: Optional[float] = None
-    conclusion = ""
-
-    # Attempt scipy first
-    use_scipy = False
     try:
         from scipy.stats import wilcoxon
-        if len(non_zero_diffs) > 0:
-            res = wilcoxon(costs_a, costs_b, zero_method='pratt')
-            w_stat = float(res.statistic)
-            p_value = float(res.pvalue)
-            use_scipy = True
-            conclusion = "Statistically Significant (p < 0.05)" if p_value < 0.05 else "Not Statistically Significant (p >= 0.05)"
+        if all(abs(a - b) <= 1e-12 for a, b in zip(ref_costs, abl_costs)):
+            statistic, p_value = 0.0, 1.0
         else:
-            w_stat = 0.0
-            p_value = 1.0
-            conclusion = "Identical performance across all paired instances (no differences)"
-    except Exception:
-        use_scipy = False
-
-    if not use_scipy and w_stat is None:
-        w_stat, p_value, conclusion = manual_wilcoxon_signed_rank(costs_a, costs_b)
+            result = wilcoxon(ref_costs, abl_costs, zero_method="pratt",
+                              alternative="two-sided")
+            statistic, p_value = float(result.statistic), float(result.pvalue)
+    except (ImportError, ValueError):
+        statistic, p_value = normal_approx_wilcoxon(ref_costs, abl_costs)
 
     return {
-        "pairs_count": len(common_keys),
-        "w_stat": w_stat,
-        "p_value": p_value,
-        "conclusion": conclusion,
-        "wins_a": wins_a,
-        "wins_b": wins_b,
-        "ties": ties,
+        "pairs": len(common),
+        "statistic": statistic,
+        "p_raw": p_value,
+        "reference_wins": sum(a < b - 1e-9 for a, b in zip(ref_costs, abl_costs)),
+        "ablation_wins": sum(b < a - 1e-9 for a, b in zip(ref_costs, abl_costs)),
+        "ties": sum(abs(a - b) <= 1e-9 for a, b in zip(ref_costs, abl_costs)),
     }
 
 
-def export_cactus_csv(records: List[Dict], csv_path: str, conditions: List[int]):
-    """Export sorted solved runtimes for each condition into cactus plot CSV format."""
-    solved_times: Dict[int, List[float]] = {}
-    for c in conditions:
-        c_records = [
-            r for r in records
-            if r["condition"] == c and r.get("status") == "SATISFIABLE" and r.get("verified") is True
-        ]
-        times = sorted([float(r.get("wall_time", r.get("total_time", 0.0))) for r in c_records])
-        solved_times[c] = times
-
-    max_solved = max([len(t) for t in solved_times.values()]) if solved_times else 0
-
-    os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
-    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        header = ["solved_instance_idx"] + [f"c{c}_time" for c in conditions]
-        writer.writerow(header)
-
-        for i in range(max_solved):
-            idx = i + 1
-            row = [idx]
-            for c in conditions:
-                times = solved_times.get(c, [])
-                if i < len(times):
-                    row.append(f"{times[i]:.6f}")
-                else:
-                    row.append("")
-            writer.writerow(row)
+def holm_adjust(comparisons: Dict[str, Dict]) -> None:
+    ranked = sorted(
+        ((name, result["p_raw"]) for name, result in comparisons.items()
+         if result["p_raw"] is not None),
+        key=lambda pair: pair[1],
+    )
+    running_max = 0.0
+    count = len(ranked)
+    for rank, (name, p_value) in enumerate(ranked):
+        adjusted = min(1.0, p_value * (count - rank))
+        running_max = max(running_max, adjusted)
+        comparisons[name]["p_holm"] = running_max
+    for result in comparisons.values():
+        result.setdefault("p_holm", None)
 
 
-def analyze_records(records: List[Dict], default_timeout: float) -> Tuple[List[Dict], Dict]:
-    """Calculate summary statistics per condition."""
-    conditions = sorted(list(set(r["condition"] for r in records)))
-    summary = []
-
-    for c in conditions:
-        cond_records = [r for r in records if r["condition"] == c]
-        total_runs = len(cond_records)
-
-        solved_records = [
-            r for r in cond_records
-            if r.get("status") == "SATISFIABLE" and r.get("verified") is True
-        ]
-        solved_count = len(solved_records)
-        timeout_count = sum(1 for r in cond_records if r.get("status") == "TIMEOUT")
-        unsat_count = sum(1 for r in cond_records if r.get("status") == "UNSATISFIABLE")
-        error_count = sum(
-            1 for r in cond_records
-            if r.get("status") == "ERROR" or (r.get("status") == "SATISFIABLE" and r.get("verified") is not True)
-        )
-
-        solve_rate = (solved_count / total_runs * 100.0) if total_runs > 0 else 0.0
-        par2, _ = compute_par2(cond_records, default_timeout)
-
-        solved_times = [float(r.get("wall_time", r.get("total_time", 0.0))) for r in solved_records]
-        mean_time = statistics.mean(solved_times) if solved_times else float('nan')
-        median_time = statistics.median(solved_times) if solved_times else float('nan')
-        std_time = statistics.stdev(solved_times) if len(solved_times) > 1 else 0.0
-
-        summary.append({
-            "condition": c,
-            "name": CONDITION_NAMES.get(c, f"C{c}"),
-            "runs": total_runs,
-            "solved": solved_count,
-            "timeouts": timeout_count,
-            "unsat": unsat_count,
-            "errors": error_count,
-            "solve_rate": solve_rate,
-            "par2": par2,
-            "mean_solved_time": mean_time,
-            "median_solved_time": median_time,
-            "std_solved_time": std_time,
+def summarize(records: List[Dict], timeout: float) -> Tuple[List[Dict], Dict[str, List[Dict]]]:
+    grouped: Dict[str, List[Dict]] = {}
+    for record in records:
+        grouped.setdefault(record["condition"], []).append(record)
+    rows = []
+    for condition in sorted(grouped, key=lambda name: (name != REFERENCE, name)):
+        subset = grouped[condition]
+        solved_records = [record for record in subset if solved(record)]
+        solved_times = [float(record["wall_time"]) for record in solved_records]
+        rows.append({
+            "condition": condition,
+            "runs": len(subset),
+            "graphs": len({record["graph"] for record in subset}),
+            "seeds": len({int(record["seed"]) for record in subset}),
+            "solved": len(solved_records),
+            "timeouts": sum(record.get("status") == "TIMEOUT" for record in subset),
+            "errors": sum(record.get("status") in ("ERROR", "UNKNOWN") for record in subset),
+            "median": statistics.median(solved_times) if solved_times else math.nan,
+            "par2": compute_par2(subset, timeout),
         })
-
-    return summary, {c: [r for r in records if r["condition"] == c] for c in conditions}
-
-
-def print_markdown_report(
-    summary: List[Dict],
-    wilcoxon_res: Optional[Dict],
-    cactus_out: str,
-):
-    """Print standard SAT Competition formatted markdown report."""
-    print("\n# SAT Benchmark & Multi-Seed Ablation Report")
-    print("## 1. Summary Performance Matrix (PAR-2 & Solved Rates)\n")
-
-    print("| Condition | Description | Runs | Solved | Timeouts | Unsat/Err | Solve Rate (%) | Mean Solved (s) | Median Solved (s) | PAR-2 Score (s) |")
-    print("|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|")
-    for s in summary:
-        mean_str = f"{s['mean_solved_time']:.3f}" if not math.isnan(s['mean_solved_time']) else "N/A"
-        median_str = f"{s['median_solved_time']:.3f}" if not math.isnan(s['median_solved_time']) else "N/A"
-        print(
-            f"| C{s['condition']} | {s['name']} | "
-            f"{s['runs']} | {s['solved']} | {s['timeouts']} | {s['unsat'] + s['errors']} | "
-            f"{s['solve_rate']:.1f}% | {mean_str} | {median_str} | "
-            f"**{s['par2']:.3f}** |"
-        )
-
-    print("\n## 2. Paired Statistical Significance Testing (Wilcoxon Signed-Rank Test)\n")
-    if wilcoxon_res and wilcoxon_res.get("pairs_count", 0) > 0:
-        w_str = f"{wilcoxon_res['w_stat']:.2f}" if wilcoxon_res['w_stat'] is not None else "N/A"
-        p_str = f"{wilcoxon_res['p_value']:.4e}" if wilcoxon_res['p_value'] is not None else "N/A"
-        print(f"- **Comparison**: Full Hybrid ($C_3$) vs Baseline ($C_0$)")
-        print(f"- **Paired Instances**: {wilcoxon_res['pairs_count']}")
-        print(f"- **Wins / Ties / Losses**: $C_3$ won {wilcoxon_res['wins_a']} | Ties {wilcoxon_res['ties']} | $C_0$ won {wilcoxon_res['wins_b']}")
-        print(f"- **Wilcoxon W-statistic**: {w_str}")
-        print(f"- **p-value**: {p_str}")
-        print(f"- **Outcome (alpha = 0.05)**: **{wilcoxon_res['conclusion']}**")
-    else:
-        print("Paired Wilcoxon comparison between C3 and C0 could not be performed (insufficient overlapping instances).")
-
-    print("\n## 3. Cactus Plot Data Export\n")
-    print(f"- Cactus plot coordinates successfully exported to: `{cactus_out}`")
-    print("- Ready for visualization with standard SAT Competition plotting scripts.")
+    return rows, grouped
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="SAT Benchmark Telemetry Analyzer & Statistical Validator."
-    )
-    parser.add_argument(
-        "--input",
-        default="logs/ablation_results.jsonl",
-        help="Input JSONL telemetry file (default: logs/ablation_results.jsonl)",
-    )
-    parser.add_argument(
-        "--cactus-out",
-        default="logs/cactus_ablation.csv",
-        help="Output CSV for Cactus plot (default: logs/cactus_ablation.csv)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=1800.0,
-        help="Default timeout threshold for PAR-2 penalty (default: 1800.0)",
-    )
+def export_cactus(records: List[Dict], path: str, conditions: List[str]) -> None:
+    times = {
+        condition: sorted(float(record["wall_time"]) for record in records
+                          if record["condition"] == condition and solved(record))
+        for condition in conditions
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["solved_index"] + [f"{condition}_time" for condition in conditions])
+        for index in range(max((len(values) for values in times.values()), default=0)):
+            writer.writerow([index + 1] + [
+                f"{times[condition][index]:.6f}" if index < len(times[condition]) else ""
+                for condition in conditions
+            ])
 
+
+def print_report(rows: List[Dict], comparisons: Dict[str, Dict], cactus_path: str) -> None:
+    print("# Named Ablation Study Report\n")
+    print("| Condition | Graphs | Seeds | Runs | Solved | Timeouts | Errors | Median solved (s) | PAR-2 (s) |")
+    print("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    for row in rows:
+        median = "N/A" if math.isnan(row["median"]) else f"{row['median']:.3f}"
+        print(f"| {row['condition']} | {row['graphs']} | {row['seeds']} | {row['runs']} | "
+              f"{row['solved']} | {row['timeouts']} | {row['errors']} | {median} | "
+              f"{row['par2']:.3f} |")
+
+    print("\n## Paired comparison against `full`\n")
+    print("| Removed/changed condition | Pairs | Full wins | Ties | Ablation wins | Raw p | Holm p |")
+    print("|---|---:|---:|---:|---:|---:|---:|")
+    for condition in sorted(comparisons):
+        result = comparisons[condition]
+        raw = "N/A" if result["p_raw"] is None else f"{result['p_raw']:.4g}"
+        holm = "N/A" if result["p_holm"] is None else f"{result['p_holm']:.4g}"
+        print(f"| {condition} | {result['pairs']} | {result['reference_wins']} | "
+              f"{result['ties']} | {result['ablation_wins']} | {raw} | {holm} |")
+    print(f"\nCactus data: `{cactus_path}`")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", default="logs/ablation_results.jsonl")
+    parser.add_argument("--cactus-out", default="logs/cactus_ablation.csv")
+    parser.add_argument("--timeout", type=float, default=1800.0)
+    parser.add_argument("--expected-seeds", type=int, default=5)
     args = parser.parse_args()
 
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    input_path = os.path.join(repo_root, args.input) if not os.path.isabs(args.input) else args.input
-    cactus_path = os.path.join(repo_root, args.cactus_out) if not os.path.isabs(args.cactus_out) else args.cactus_out
+    if args.expected_seeds <= 0:
+        parser.error("--expected-seeds must be positive")
 
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    resolve = lambda path: path if os.path.isabs(path) else os.path.join(repo_root, path)
+    input_path = resolve(args.input)
+    if not os.path.isfile(input_path):
+        parser.error(f"input does not exist: {input_path}")
     records = load_records(input_path)
     if not records:
-        print(f"Error: No valid records found in {input_path}", file=sys.stderr)
-        sys.exit(1)
+        parser.error("input contains no valid records")
+    binary_hashes = {
+        record.get("binary_sha256") for record in records if record.get("binary_sha256")
+    }
+    if len(binary_hashes) > 1:
+        parser.error("input mixes multiple solver binaries; split the JSONL by binary hash")
 
-    summary, grouped_records = analyze_records(records, args.timeout)
-
-    conditions = [s["condition"] for s in summary]
-    export_cactus_csv(records, cactus_path, conditions)
-
-    wilcoxon_res = None
-    if 3 in grouped_records and 0 in grouped_records:
-        wilcoxon_res = perform_wilcoxon_test(
-            grouped_records[3],
-            grouped_records[0],
-            name_a="C3",
-            name_b="C0",
-            default_timeout=args.timeout,
+    rows, grouped = summarize(records, args.timeout)
+    incomplete = [
+        row["condition"] for row in rows
+        if row["seeds"] < args.expected_seeds
+    ]
+    if incomplete:
+        print(
+            f"Warning: fewer than {args.expected_seeds} seeds for: "
+            + ", ".join(incomplete),
+            file=sys.stderr,
         )
+    conditions = [row["condition"] for row in rows]
+    cactus_path = resolve(args.cactus_out)
+    export_cactus(records, cactus_path, conditions)
 
-    print_markdown_report(summary, wilcoxon_res, cactus_path)
+    comparisons: Dict[str, Dict] = {}
+    if REFERENCE in grouped:
+        for condition, subset in grouped.items():
+            if condition != REFERENCE:
+                comparisons[condition] = paired_test(
+                    grouped[REFERENCE], subset, args.timeout
+                )
+    holm_adjust(comparisons)
+    print_report(rows, comparisons, cactus_path)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

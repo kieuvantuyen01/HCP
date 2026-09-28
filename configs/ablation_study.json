@@ -1,0 +1,54 @@
+{
+  "protocol": "docs/research/experiments/2026-09-28-principled-spqr-ablation-sat-protocol.md",
+  "reference": "full",
+  "conditions": [
+    "full",
+    "no-decomposition",
+    "no-dispatch",
+    "no-series",
+    "no-two-cut",
+    "no-repair",
+    "undirected-cubic",
+    "one-alternating-worker"
+  ],
+  "aliases": {
+    "Proposed-NoDecomposition": "no-decomposition",
+    "Proposed-NoRepair": "no-repair",
+    "Proposed-NoContraction": "no-series"
+  },
+  "seeds": [1, 42, 137, 777, 2026],
+  "cutoff_tiers_seconds": {
+    "screening": 60,
+    "confirmation": 300,
+    "final": 1800
+  },
+  "external_baselines": [
+    "takehide-soh-original-cegar",
+    "cegar-2025-best",
+    "hcp-user-propagator-best",
+    "plain-edge-degree-cnf-cadical-1.9.5",
+    "plain-edge-degree-cnf-kissat"
+  ],
+  "primary_metrics": ["solved_count", "PAR-2"],
+  "required_artifacts": [
+    "verified_tour",
+    "jsonl_telemetry",
+    "binary_sha256",
+    "git_commit",
+    "command_line"
+  ],
+  "final_single_run_profile": {
+    "protocol": "docs/research/experiments/2026-09-28-final-single-run-ablation-protocol.md",
+    "conditions": [
+      "full",
+      "no-dispatch",
+      "no-decomposition",
+      "no-two-cut"
+    ],
+    "seeds": [1],
+    "cutoff_seconds": 1800,
+    "instances": 1001,
+    "runs_expected": 4004,
+    "execution": "four sequential nonoverlapping condition scripts"
+  }
+}

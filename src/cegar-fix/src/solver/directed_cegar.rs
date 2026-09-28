@@ -18,6 +18,14 @@ pub fn can_solve_directed_cubic(g: &Graph) -> bool {
 
 /// Solves Hamiltonian cycle on 3-regular graph `g` using Directed 2-Loop SAT-CEGAR.
 pub fn solve_directed_cubic(g: &Graph, timeout_secs: f64) -> Result<Vec<i32>, String> {
+    solve_directed_cubic_with_seed(g, timeout_secs, 1)
+}
+
+pub fn solve_directed_cubic_with_seed(
+    g: &Graph,
+    timeout_secs: f64,
+    seed: i32,
+) -> Result<Vec<i32>, String> {
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
     let mut nodes: Vec<i32> = g.adjacency_list.keys().copied().collect();
     nodes.sort_unstable();
@@ -40,6 +48,7 @@ pub fn solve_directed_cubic(g: &Graph, timeout_secs: f64) -> Result<Vec<i32>, St
     }
 
     let mut solver = create_solver_with_deadline(deadline);
+    let _ = solver.set_option("seed", seed.max(1));
 
     // 1. Out-degree == 1 for every vertex u:
     //    \sum_{v in N(u)} x_{(u, v)} = 1
@@ -157,7 +166,10 @@ pub fn solve_directed_cubic(g: &Graph, timeout_secs: f64) -> Result<Vec<i32>, St
 
                 // Termination: single cycle containing all vertices
                 if cycles.len() == 1 && cycles[0].len() == n {
-                    println!("[directed_cegar] Solved 3-regular cubic graph in {} iterations!", iter_count);
+                    println!(
+                        "[directed_cegar] Solved 3-regular cubic graph in {} iterations!",
+                        iter_count
+                    );
                     return Ok(cycles.pop().unwrap());
                 }
 

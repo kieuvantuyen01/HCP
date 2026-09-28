@@ -90,7 +90,11 @@ pub fn detect_and_partition(raw_g: &Graph) -> Option<BipartitePartition> {
         if corridor.contains(&u) {
             continue;
         }
-        let sh_nbrs: Vec<i32> = nbrs.iter().filter(|v| sh_set.contains(v)).copied().collect();
+        let sh_nbrs: Vec<i32> = nbrs
+            .iter()
+            .filter(|v| sh_set.contains(v))
+            .copied()
+            .collect();
         if sh_nbrs.len() == 1 {
             let h = sh_nbrs[0];
             clusters.entry(h).or_default().insert(u);
@@ -123,7 +127,9 @@ pub fn detect_and_partition(raw_g: &Graph) -> Option<BipartitePartition> {
         let mut ports = Vec::new();
         for &u in c_nodes {
             if let Some(nbrs) = raw_g.adjacency_list.get(&u) {
-                let has_ext = nbrs.iter().any(|&v| v != h && (corridor.contains(&v) || owner.get(&v) != Some(&h)));
+                let has_ext = nbrs
+                    .iter()
+                    .any(|&v| v != h && (corridor.contains(&v) || owner.get(&v) != Some(&h)));
                 if has_ext {
                     ports.push(u);
                     all_ports.insert(u);
@@ -181,7 +187,16 @@ pub struct MacroSatSolver {
 
 impl MacroSatSolver {
     pub fn new(partition: &BipartitePartition, raw_g: &Graph) -> Result<Self, String> {
+        Self::new_with_seed(partition, raw_g, 1)
+    }
+
+    pub fn new_with_seed(
+        partition: &BipartitePartition,
+        raw_g: &Graph,
+        seed: i32,
+    ) -> Result<Self, String> {
         let mut solver = CaDiCaL::default();
+        let _ = solver.set_option("seed", seed.max(1));
         let mut var_mgr = BasicVarManager::default();
         let mut edge_vars = HashMap::new();
 
@@ -221,7 +236,9 @@ impl MacroSatSolver {
         for (&h, p_map) in &pair_vars {
             let c_nodes = &partition.clusters[&h];
             for &u in c_nodes {
-                let internal_deg = raw_g.adjacency_list.get(&u)
+                let internal_deg = raw_g
+                    .adjacency_list
+                    .get(&u)
                     .map(|nbrs| nbrs.iter().filter(|v| c_nodes.contains(v)).count())
                     .unwrap_or(0);
                 if internal_deg <= 1 {
@@ -264,7 +281,11 @@ impl MacroSatSolver {
                     for i in 0..ext_edges.len() {
                         for j in (i + 1)..ext_edges.len() {
                             for k in (j + 1)..ext_edges.len() {
-                                let _ = solver.add_clause(clause![!ext_edges[i], !ext_edges[j], !ext_edges[k]]);
+                                let _ = solver.add_clause(clause![
+                                    !ext_edges[i],
+                                    !ext_edges[j],
+                                    !ext_edges[k]
+                                ]);
                             }
                         }
                     }
@@ -277,7 +298,11 @@ impl MacroSatSolver {
                         let _ = solver.add_clause(Clause::from_iter(cl));
                     }
 
-                    crate::solver::cegar_engine::add_at_most_2(&mut solver, &mut var_mgr, &ext_edges);
+                    crate::solver::cegar_engine::add_at_most_2(
+                        &mut solver,
+                        &mut var_mgr,
+                        &ext_edges,
+                    );
 
                     if ext_edges.len() < 2 {
                         let _ = solver.add_clause(clause![!b_var]);
@@ -310,7 +335,11 @@ impl MacroSatSolver {
                     for &p_lit in &endpoint_lits {
                         for i in 0..ext_edges.len() {
                             for j in (i + 1)..ext_edges.len() {
-                                let _ = solver.add_clause(clause![!p_lit, !ext_edges[i], !ext_edges[j]]);
+                                let _ = solver.add_clause(clause![
+                                    !p_lit,
+                                    !ext_edges[i],
+                                    !ext_edges[j]
+                                ]);
                             }
                         }
                     }
@@ -459,7 +488,9 @@ impl MacroSatSolver {
                     }
                 }
 
-                if !comp_clusters.is_empty() && comp_clusters.len() < self.partition.super_hubs.len() {
+                if !comp_clusters.is_empty()
+                    && comp_clusters.len() < self.partition.super_hubs.len()
+                {
                     let mut cut_nodes: HashSet<i32> = HashSet::new();
                     for &h in &comp_clusters {
                         if let Some(ports) = self.partition.boundary_ports.get(&h) {
@@ -516,6 +547,28 @@ pub fn solve_cluster_path(
     adj: &HashMap<i32, Vec<i32>>,
     deadline: Instant,
 ) -> Option<Vec<i32>> {
+    solve_cluster_path_with_config(
+        _cluster_id,
+        u_in,
+        u_out,
+        cluster_nodes,
+        adj,
+        deadline,
+        true,
+        1,
+    )
+}
+
+pub fn solve_cluster_path_with_config(
+    _cluster_id: i32,
+    u_in: i32,
+    u_out: i32,
+    cluster_nodes: &HashSet<i32>,
+    adj: &HashMap<i32, Vec<i32>>,
+    deadline: Instant,
+    enable_repair: bool,
+    seed: i32,
+) -> Option<Vec<i32>> {
     let t0 = Instant::now();
     let m = cluster_nodes.len();
     if m == 1 {
@@ -558,6 +611,7 @@ pub fn solve_cluster_path(
     edges.sort_unstable();
 
     let mut solver = CaDiCaL::default();
+    let _ = solver.set_option("seed", seed.max(1));
     let deadline_copy = deadline;
     solver.attach_terminator(move || {
         if Instant::now() >= deadline_copy {
@@ -580,7 +634,11 @@ pub fn solve_cluster_path(
 
     for u_idx in 0..m {
         let lits: Vec<Lit> = inc_edges[u_idx].iter().map(|&(_, lit)| lit).collect();
-        let target = if u_idx == u_in_idx || u_idx == u_out_idx { 1 } else { 2 };
+        let target = if u_idx == u_in_idx || u_idx == u_out_idx {
+            1
+        } else {
+            2
+        };
         if lits.len() < target {
             return None;
         }
@@ -679,7 +737,10 @@ pub fn solve_cluster_path(
                 while !vis[curr_c] {
                     vis[curr_c] = true;
                     cyc.push(curr_c);
-                    let nxt = active_adj[curr_c].iter().copied().find(|&w| Some(w) != prev_c);
+                    let nxt = active_adj[curr_c]
+                        .iter()
+                        .copied()
+                        .find(|&w| Some(w) != prev_c);
                     match nxt {
                         Some(w) => {
                             prev_c = Some(curr_c);
@@ -697,14 +758,19 @@ pub fn solve_cluster_path(
         if cycles.is_empty() && path.len() == m && curr == u_out_idx {
             println!(
                 "[hub_cluster] Cluster {} ({} nodes, {} -> {}) solved in {:.2}s ({} iters)",
-                _cluster_id, m, u_in, u_out, t0.elapsed().as_secs_f64(), _it + 1
+                _cluster_id,
+                m,
+                u_in,
+                u_out,
+                t0.elapsed().as_secs_f64(),
+                _it + 1
             );
             let orig_path: Vec<i32> = path.into_iter().map(|idx| nodes_vec[idx]).collect();
             return Some(orig_path);
         }
 
         // Fast 2-opt cycle merge when <= 8 cycles remain
-        if cycles.len() <= 8 && curr == u_out_idx {
+        if enable_repair && cycles.len() <= 8 && curr == u_out_idx {
             let mut merged_path = path.clone();
             let mut rem_cycles = Vec::new();
             for cyc in &cycles {
@@ -755,7 +821,8 @@ pub fn solve_cluster_path(
                     "[hub_cluster] Cluster {} ({} nodes, {} -> {}) 2-opt merged in {:.2}s ({} iters)",
                     _cluster_id, m, u_in, u_out, t0.elapsed().as_secs_f64(), _it + 1
                 );
-                let orig_path: Vec<i32> = merged_path.into_iter().map(|idx| nodes_vec[idx]).collect();
+                let orig_path: Vec<i32> =
+                    merged_path.into_iter().map(|idx| nodes_vec[idx]).collect();
                 return Some(orig_path);
             }
         }
@@ -806,11 +873,23 @@ pub fn solve_cluster_path(
         }
     }
 
-    println!("[hub_cluster] Cluster {} reached max_it={}", _cluster_id, max_it);
+    println!(
+        "[hub_cluster] Cluster {} reached max_it={}",
+        _cluster_id, max_it
+    );
     None
 }
 
 pub fn solve_bipartite(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i32>> {
+    solve_bipartite_with_config(raw_g, timeout_secs, true, 1)
+}
+
+pub fn solve_bipartite_with_config(
+    raw_g: &Graph,
+    timeout_secs: f64,
+    enable_repair: bool,
+    seed: i32,
+) -> Option<Vec<i32>> {
     let t_start = Instant::now();
     let deadline = t_start + std::time::Duration::from_secs_f64(timeout_secs);
 
@@ -821,7 +900,7 @@ pub fn solve_bipartite(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i32>> {
         partition.connectors.len()
     );
 
-    let mut macro_solver = MacroSatSolver::new(&partition, raw_g).ok()?;
+    let mut macro_solver = MacroSatSolver::new_with_seed(&partition, raw_g, seed).ok()?;
 
     while Instant::now() < deadline {
         let config = match macro_solver.solve_next_configuration() {
@@ -860,7 +939,16 @@ pub fn solve_bipartite(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i32>> {
                 if rem <= 0.0 {
                     return (*h, *u_in, *u_out, None);
                 }
-                let p = solve_cluster_path(*h, *u_in, *u_out, nodes, &raw_g.adjacency_list, deadline);
+                let p = solve_cluster_path_with_config(
+                    *h,
+                    *u_in,
+                    *u_out,
+                    nodes,
+                    &raw_g.adjacency_list,
+                    deadline,
+                    enable_repair,
+                    seed,
+                );
                 (*h, *u_in, *u_out, p)
             })
             .collect();
@@ -913,7 +1001,11 @@ pub fn solve_bipartite(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i32>> {
             macro_cycle.push(curr);
             let nbrs = &macro_adj[&curr];
             let next_node = if nbrs[0] == prev {
-                if nbrs.len() > 1 { nbrs[1] } else { break; }
+                if nbrs.len() > 1 {
+                    nbrs[1]
+                } else {
+                    break;
+                }
             } else {
                 nbrs[0]
             };

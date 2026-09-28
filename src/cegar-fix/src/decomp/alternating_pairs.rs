@@ -40,11 +40,7 @@ fn is_valid_dir_cycle(cyc: &[usize], dir_adj: &[Vec<usize>]) -> bool {
     true
 }
 
-fn merge_two_dir_cycles(
-    c1: &[usize],
-    c2: &[usize],
-    dir_adj: &[Vec<usize>],
-) -> Option<Vec<usize>> {
+fn merge_two_dir_cycles(c1: &[usize], c2: &[usize], dir_adj: &[Vec<usize>]) -> Option<Vec<usize>> {
     let n1 = c1.len();
     let n2 = c2.len();
     if n1 == 0 || n2 == 0 {
@@ -80,10 +76,7 @@ fn merge_two_dir_cycles(
     None
 }
 
-fn pairwise_dir_merge(
-    cycles: &[Vec<usize>],
-    dir_adj: &[Vec<usize>],
-) -> Vec<Vec<usize>> {
+fn pairwise_dir_merge(cycles: &[Vec<usize>], dir_adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
     let mut curr = cycles.to_vec();
     let mut merged_any = true;
     while merged_any && curr.len() > 1 {
@@ -125,7 +118,11 @@ struct AlternatingPairGraph {
 const MIN_DEG2_FRACTION: f64 = 0.15;
 
 fn extract_alternating_pairs(raw_g: &Graph) -> Option<AlternatingPairGraph> {
-    let deg2_count = raw_g.adjacency_list.values().filter(|nbrs| nbrs.len() == 2).count();
+    let deg2_count = raw_g
+        .adjacency_list
+        .values()
+        .filter(|nbrs| nbrs.len() == 2)
+        .count();
     let n = raw_g.adjacency_list.len();
     let deg2_fraction = deg2_count as f64 / n as f64;
     if deg2_fraction < MIN_DEG2_FRACTION {
@@ -208,6 +205,16 @@ pub fn can_solve_alternating_pairs(raw_g: &Graph) -> bool {
 }
 
 pub fn solve_alternating_pairs(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i32>> {
+    solve_alternating_pairs_with_config(raw_g, timeout_secs, 3, true, 1)
+}
+
+pub fn solve_alternating_pairs_with_config(
+    raw_g: &Graph,
+    timeout_secs: f64,
+    num_workers: usize,
+    enable_repair: bool,
+    seed: i32,
+) -> Option<Vec<i32>> {
     let t_start = Instant::now();
     let deadline = t_start + Duration::from_secs_f64(timeout_secs);
 
@@ -315,7 +322,7 @@ pub fn solve_alternating_pairs(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i
         cnf.add_clause(Clause::from_iter(lits));
     }
 
-    let num_workers = 3;
+    let num_workers = num_workers.clamp(1, 3);
     let (tx_res, rx_res) = mpsc::channel::<WorkerMsg>();
     let mut worker_senders: Vec<mpsc::Sender<WorkerCmd>> = Vec::new();
     let mut cancel_flags: Vec<Arc<AtomicBool>> = Vec::new();
@@ -329,25 +336,16 @@ pub fn solve_alternating_pairs(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i
 
         let tx_res_clone = tx_res.clone();
         let cnf_clone = cnf.clone();
+        let worker_seed = seed
+            .max(1)
+            .saturating_add((worker_id as i32).saturating_mul(104_729));
 
         let handle = thread::spawn(move || {
             let mut solver = CaDiCaL::default();
             let _ = solver.set_option("chrono", 1);
-            match worker_id {
-                0 => {
-                    let _ = solver.set_option("seed", 777);
-                    let _ = solver.set_option("restartint", 50);
-                }
-                1 => {
-                    let _ = solver.set_option("seed", 42);
-                    let _ = solver.set_option("restartint", 100);
-                }
-                2 => {
-                    let _ = solver.set_option("seed", 1337);
-                    let _ = solver.set_option("restartint", 200);
-                }
-                _ => {}
-            }
+            let _ = solver.set_option("seed", worker_seed);
+            let restart_interval = [50, 100, 200][worker_id];
+            let _ = solver.set_option("restartint", restart_interval);
 
             let _ = solver.add_cnf(cnf_clone.clone());
 
@@ -369,7 +367,8 @@ pub fn solve_alternating_pairs(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i
                             let _ = tx_res_clone.send(WorkerMsg::Cancelled);
                         } else if matches!(res, Ok(SolverResult::Sat)) {
                             let sol = solver.full_solution().unwrap();
-                            let _ = tx_res_clone.send(WorkerMsg::Solution(worker_id, sol.into_iter().collect()));
+                            let _ = tx_res_clone
+                                .send(WorkerMsg::Solution(worker_id, sol.into_iter().collect()));
                         } else if matches!(res, Ok(SolverResult::Unsat)) {
                             let _ = tx_res_clone.send(WorkerMsg::Unsat);
                         } else {
@@ -464,7 +463,9 @@ pub fn solve_alternating_pairs(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i
         cycles.sort_by_key(|c| std::cmp::Reverse(c.len()));
         let raw_cycles = cycles.clone();
 
-        cycles = pairwise_dir_merge(&cycles, &dir_adj);
+        if enable_repair {
+            cycles = pairwise_dir_merge(&cycles, &dir_adj);
+        }
 
         let lens: Vec<usize> = cycles.iter().map(|c| c.len()).collect();
         let top5: Vec<usize> = lens.iter().take(5).copied().collect();
@@ -492,8 +493,6 @@ pub fn solve_alternating_pairs(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i
                 break;
             }
         }
-
-
 
         let mut cuts = Cnf::new();
         for c in &raw_cycles {
@@ -542,8 +541,6 @@ pub fn solve_alternating_pairs(raw_g: &Graph, timeout_secs: f64) -> Option<Vec<i
                 if !in_lits.is_empty() {
                     cuts.add_clause(Clause::from_iter(in_lits.iter().copied()));
                 }
-
-
             }
         }
 
