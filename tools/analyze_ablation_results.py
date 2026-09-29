@@ -135,6 +135,7 @@ def summarize(records: List[Dict], timeout: float) -> Tuple[List[Dict], Dict[str
             "seeds": len({int(record["seed"]) for record in subset}),
             "solved": len(solved_records),
             "timeouts": sum(record.get("status") == "TIMEOUT" for record in subset),
+            "memouts": sum(record.get("status") == "MEMOUT" for record in subset),
             "errors": sum(record.get("status") in ("ERROR", "UNKNOWN") for record in subset),
             "median": statistics.median(solved_times) if solved_times else math.nan,
             "par2": compute_par2(subset, timeout),
@@ -161,12 +162,13 @@ def export_cactus(records: List[Dict], path: str, conditions: List[str]) -> None
 
 def print_report(rows: List[Dict], comparisons: Dict[str, Dict], cactus_path: str) -> None:
     print("# Named Ablation Study Report\n")
-    print("| Condition | Graphs | Seeds | Runs | Solved | Timeouts | Errors | Median solved (s) | PAR-2 (s) |")
-    print("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    print("| Condition | Graphs | Seeds | Runs | Solved | Timeouts | Memory-outs | Errors | Median solved (s) | PAR-2 (s) |")
+    print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for row in rows:
         median = "N/A" if math.isnan(row["median"]) else f"{row['median']:.3f}"
         print(f"| {row['condition']} | {row['graphs']} | {row['seeds']} | {row['runs']} | "
-              f"{row['solved']} | {row['timeouts']} | {row['errors']} | {median} | "
+              f"{row['solved']} | {row['timeouts']} | {row['memouts']} | "
+              f"{row['errors']} | {median} | "
               f"{row['par2']:.3f} |")
 
     print("\n## Paired comparison against `full`\n")
@@ -205,6 +207,11 @@ def main() -> None:
     }
     if len(binary_hashes) > 1:
         parser.error("input mixes multiple solver binaries; split the JSONL by binary hash")
+    memory_limits = {record.get("memory_limit_mb") for record in records}
+    if len(memory_limits) > 1:
+        parser.error(
+            "input mixes multiple memory-limit policies; split the JSONL before analysis"
+        )
 
     rows, grouped = summarize(records, args.timeout)
     incomplete = [

@@ -8,6 +8,7 @@ graphs_dir="${HCP_GRAPHS_DIR:-$repo_root/FHCPCS-col}"
 all_conditions="full,no-dispatch,no-decomposition,no-two-cut"
 seed=1
 timeout=1800
+memory_limit_mb=7168
 
 if [[ "$#" -ne 1 ]]; then
   echo "Usage: $0 {full|no-dispatch|no-decomposition|no-two-cut}" >&2
@@ -23,7 +24,29 @@ case "$condition" in
     ;;
 esac
 
-mkdir -p "$run_dir/raw-logs" "$run_dir/tours"
+mkdir -p "$run_dir/raw-logs" "$run_dir/runlim" "$run_dir/tours"
+
+runlim_bin="${RUNLIM_BIN:-}"
+if [[ -z "$runlim_bin" && -x "$repo_root/bin/runlim" ]]; then
+  runlim_bin="$repo_root/bin/runlim"
+fi
+if [[ -z "$runlim_bin" ]]; then
+  runlim_bin="$(command -v runlim || true)"
+fi
+if [[ -z "$runlim_bin" && -x /usr/local/bin/runlim ]]; then
+  runlim_bin=/usr/local/bin/runlim
+fi
+if [[ -z "$runlim_bin" || ! -x "$runlim_bin" ]]; then
+  echo "runlim is required to enforce the ${memory_limit_mb}-MB memory limit." >&2
+  echo "Run ./setup_env.sh or set RUNLIM_BIN=/absolute/path/to/runlim." >&2
+  exit 2
+fi
+runlim_version="$("$runlim_bin" --version 2>&1 | head -n 1)"
+if [[ "$runlim_version" != "2.0.0rc14" ]]; then
+  echo "Expected runlim 2.0.0rc14; found: ${runlim_version:-unknown}" >&2
+  echo "Run ./setup_env.sh to install the pinned benchmark version." >&2
+  exit 2
+fi
 
 lock_dir="$run_dir/.active-condition-run"
 if ! mkdir "$lock_dir" 2>/dev/null; then
@@ -48,7 +71,8 @@ fi
 cargo build --release --locked --manifest-path "$repo_root/src/cegar-fix/Cargo.toml"
 
 REPO_ROOT="$repo_root" BINARY="$binary" GRAPHS_DIR="$graphs_dir" RUN_DIR="$run_dir" \
-CONDITIONS="$all_conditions" CONDITION="$condition" SEED="$seed" TIMEOUT="$timeout" python3 - <<'PY'
+CONDITIONS="$all_conditions" CONDITION="$condition" SEED="$seed" TIMEOUT="$timeout" \
+MEMORY_LIMIT_MB="$memory_limit_mb" RUNLIM_BIN="$runlim_bin" python3 - <<'PY'
 import hashlib
 import json
 import os
@@ -69,6 +93,13 @@ def command_output(command):
         return subprocess.check_output(command, cwd=repo, text=True).strip()
     except (OSError, subprocess.CalledProcessError):
         return None
+
+def physical_memory_bytes():
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError):
+        value = command_output(["sysctl", "-n", "hw.memsize"])
+        return int(value) if value else None
 
 graph_paths = list(graphs_dir.glob("graph*.col"))
 expected_names = {f"graph{i}.col" for i in range(1, 1002)}
@@ -96,6 +127,7 @@ metadata = {
     "conditions": os.environ["CONDITIONS"].split(","),
     "seed": int(os.environ["SEED"]),
     "timeout_seconds": int(os.environ["TIMEOUT"]),
+    "memory_limit_mb": int(os.environ["MEMORY_LIMIT_MB"]),
     "runs_expected": 1001 * len(os.environ["CONDITIONS"].split(",")),
     "execution": "four nonoverlapping condition jobs; one solver process at a time; up to three solver-internal threads",
     "git_commit": command_output(["git", "rev-parse", "HEAD"]),
@@ -110,7 +142,12 @@ metadata = {
     "machine": platform.machine(),
     "processor": platform.processor() or command_output(["sysctl", "-n", "machdep.cpu.brand_string"]),
     "logical_cpus": os.cpu_count(),
-    "memory_bytes": command_output(["sysctl", "-n", "hw.memsize"]),
+    "memory_bytes": physical_memory_bytes(),
+    "runlim_binary": str(Path(os.environ["RUNLIM_BIN"]).resolve()),
+    "runlim_binary_sha256": hashlib.sha256(
+        Path(os.environ["RUNLIM_BIN"]).read_bytes()
+    ).hexdigest(),
+    "runlim_version": command_output([os.environ["RUNLIM_BIN"], "--version"]),
     "python": platform.python_version(),
     "rustc": command_output(["rustc", "--version"]),
     "cargo": command_output(["cargo", "--version"]),
@@ -121,9 +158,11 @@ if results_path.exists() and results_path.stat().st_size:
         raise SystemExit("Cannot resume: results.jsonl exists without metadata.json")
     previous = json.loads(metadata_path.read_text())
     frozen_keys = (
-        "conditions", "seed", "timeout_seconds", "git_commit", "binary_sha256",
+        "conditions", "seed", "timeout_seconds", "memory_limit_mb",
+        "git_commit", "binary_sha256",
         "graphs_dir", "dataset_manifest_sha256", "platform", "machine",
-        "processor", "logical_cpus", "memory_bytes", "rustc", "cargo",
+        "processor", "logical_cpus", "memory_bytes", "runlim_binary_sha256",
+        "runlim_version", "rustc", "cargo",
     )
     mismatches = [key for key in frozen_keys if previous.get(key) != metadata.get(key)]
     if mismatches:
@@ -158,6 +197,9 @@ runner=(
   --conditions "$condition"
   --seeds "$seed"
   --timeout "$timeout"
+  --memory-limit-mb "$memory_limit_mb"
+  --runlim "$runlim_bin"
+  --runlim-log-dir "$run_dir/runlim"
   --output "$run_dir/results.jsonl"
   --tour-dir "$run_dir/tours"
   --raw-log-dir "$run_dir/raw-logs"
@@ -208,6 +250,8 @@ if actual_current_keys != expected_current_keys:
     )
 if any(float(r["timeout_limit"]) != 1800.0 for r in records):
     errors.append("at least one record has a non-1800-second cutoff")
+if any(int(r.get("memory_limit_mb", -1)) != 7168 for r in records):
+    errors.append("at least one record has a non-7168-MB memory limit")
 bad_features = [
     r for r in records
     if r.get("feature_vector") != expected_features.get(r.get("condition"))
@@ -221,9 +265,13 @@ if any(r.get("status") == "SATISFIABLE" and not Path(r.get("tour_path", "")).is_
 if any(
     not Path(r.get(field, "")).is_file()
     for r in records
-    for field in ("stdout_path", "stderr_path")
+    for field in ("stdout_path", "stderr_path", "runlim_log_path")
 ):
-    errors.append("at least one record is missing its raw stdout/stderr log")
+    errors.append("at least one record is missing a raw stdout/stderr/runlim log")
+if any(r.get("peak_memory_mb") is None for r in records):
+    errors.append("at least one record is missing peak-memory telemetry")
+if any(not r.get("runlim_status") for r in records):
+    errors.append("at least one record is missing its final runlim status")
 if any(float(r.get("cpu_total_time", -1)) < 0 for r in records):
     errors.append("at least one record is missing valid aggregate CPU time")
 unsat_runs = [r for r in records if r.get("status") == "UNSATISFIABLE"]

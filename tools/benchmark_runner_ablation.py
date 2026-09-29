@@ -164,8 +164,15 @@ def git_commit(repo_root: str) -> Optional[str]:
         return None
 
 
-def load_completed_keys(path: str) -> Set[Tuple[str, str, int, float, str]]:
-    keys: Set[Tuple[str, str, int, float, str]] = set()
+def record_memory_limit_mb(record: Dict) -> Optional[int]:
+    value = record.get("memory_limit_mb")
+    return None if value is None else int(value)
+
+
+def load_completed_keys(
+    path: str,
+) -> Set[Tuple[str, str, int, float, Optional[int], str]]:
+    keys: Set[Tuple[str, str, int, float, Optional[int], str]] = set()
     if not os.path.exists(path):
         return keys
     with open(path, "r", encoding="utf-8") as handle:
@@ -177,6 +184,7 @@ def load_completed_keys(path: str) -> Set[Tuple[str, str, int, float, str]]:
                     canonical_condition(str(record["condition"])),
                     int(record["seed"]),
                     float(record["timeout_limit"]),
+                    record_memory_limit_mb(record),
                     str(record["binary_sha256"]),
                 ))
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
@@ -187,6 +195,47 @@ def load_completed_keys(path: str) -> Set[Tuple[str, str, int, float, str]]:
 def extract_int_max(pattern: str, text: str) -> int:
     values = [int(match.group(1)) for match in re.finditer(pattern, text)]
     return max(values) if values else 0
+
+
+def parse_runlim_log(path: Optional[str]) -> Dict[str, Optional[object]]:
+    metrics: Dict[str, Optional[object]] = {
+        "status": None,
+        "real_seconds": None,
+        "cpu_seconds": None,
+        "space_mb": None,
+    }
+    if not path or not os.path.isfile(path):
+        return metrics
+
+    values: Dict[str, str] = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            match = re.match(r"^\[runlim\]\s+([^:]+):\s*(.*?)\s*$", raw_line)
+            if match:
+                values[match.group(1).strip().lower()] = match.group(2).strip()
+
+    metrics["status"] = values.get("status")
+    for key, destination in (
+        ("real", "real_seconds"),
+        ("time", "cpu_seconds"),
+        ("space", "space_mb"),
+    ):
+        value = values.get(key)
+        if value:
+            try:
+                metrics[destination] = float(value.split()[0])
+            except ValueError:
+                pass
+    return metrics
+
+
+def runlim_failure_status(status: Optional[object]) -> Optional[str]:
+    normalized = str(status or "").strip().lower()
+    if "memory" in normalized or "space" in normalized:
+        return "MEMOUT"
+    if "time" in normalized:
+        return "TIMEOUT"
+    return None
 
 
 def run_benchmark_instance(
@@ -200,6 +249,9 @@ def run_benchmark_instance(
     tour_dir: str,
     raw_log_dir: Optional[str],
     cores: Optional[str],
+    memory_limit_mb: Optional[int],
+    runlim_binary: Optional[str],
+    runlim_log_dir: Optional[str],
     graph_cache: Dict[str, Tuple[int, int, Dict[int, Set[int]]]],
 ) -> Dict:
     graph_base = os.path.splitext(os.path.basename(graph_path))[0]
@@ -219,7 +271,29 @@ def run_benchmark_instance(
         "--output-tour", tour_path,
     ]
     taskset = shutil.which("taskset")
-    command = [taskset, "-c", cores] + solver_cmd if cores and taskset else solver_cmd
+    solver_command = (
+        [taskset, "-c", cores] + solver_cmd if cores and taskset else solver_cmd
+    )
+
+    runlim_log_path = None
+    if memory_limit_mb is not None:
+        if not runlim_binary or not runlim_log_dir:
+            raise ValueError("runlim is required when a memory limit is configured")
+        os.makedirs(runlim_log_dir, exist_ok=True)
+        run_stem = f"{graph_base}_{condition}_s{seed}"
+        runlim_log_path = os.path.abspath(
+            os.path.join(runlim_log_dir, f"{run_stem}.runlim")
+        )
+        if os.path.exists(runlim_log_path):
+            os.remove(runlim_log_path)
+        command = [
+            runlim_binary,
+            "-r", f"{timeout:g}",
+            "-s", str(memory_limit_mb),
+            "-o", runlim_log_path,
+        ] + solver_command
+    else:
+        command = solver_command
 
     usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
     start = time.perf_counter()
@@ -238,7 +312,10 @@ def run_benchmark_instance(
         # The process-level limit is the published end-to-end wall-clock cutoff.
         # The solver receives the same deadline, but the harness remains the
         # authority when a blocking backend call does not poll its terminator.
-        stdout, stderr = process.communicate(timeout=timeout)
+        # When runlim is active it owns the scientific cutoff. The extra grace
+        # period is only a harness watchdog so runlim can flush its audit log.
+        watchdog_timeout = timeout + 30.0 if memory_limit_mb is not None else timeout
+        stdout, stderr = process.communicate(timeout=watchdog_timeout)
         returncode = process.returncode
         wall_time = time.perf_counter() - start
     except subprocess.TimeoutExpired:
@@ -263,6 +340,9 @@ def run_benchmark_instance(
     usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu_user_time = usage_after.ru_utime - usage_before.ru_utime
     cpu_system_time = usage_after.ru_stime - usage_before.ru_stime
+    runlim_metrics = parse_runlim_log(runlim_log_path)
+    if runlim_metrics["real_seconds"] is not None:
+        wall_time = float(runlim_metrics["real_seconds"])
 
     stdout_path = None
     stderr_path = None
@@ -276,11 +356,16 @@ def run_benchmark_instance(
         with open(stderr_path, "w", encoding="utf-8") as handle:
             handle.write(stderr)
 
-    if "s SATISFIABLE" in stdout:
+    limit_status = runlim_failure_status(runlim_metrics["status"])
+    if timed_out:
+        status = "TIMEOUT"
+    elif limit_status is not None:
+        status = limit_status
+    elif "s SATISFIABLE" in stdout:
         status = "SATISFIABLE"
     elif "s UNSATISFIABLE" in stdout:
         status = "UNSATISFIABLE"
-    elif timed_out or "TIMEOUT" in stdout or "TIMEOUT" in stderr:
+    elif "TIMEOUT" in stdout or "TIMEOUT" in stderr:
         status = "TIMEOUT"
     elif returncode != 0:
         status = "ERROR"
@@ -332,6 +417,11 @@ def run_benchmark_instance(
         "verification_msg": verification_msg,
         "tour_path": tour_path if os.path.exists(tour_path) else None,
         "timeout_limit": timeout,
+        "memory_limit_mb": memory_limit_mb,
+        "peak_memory_mb": runlim_metrics["space_mb"],
+        "runlim_status": runlim_metrics["status"],
+        "runlim_cpu_time": runlim_metrics["cpu_seconds"],
+        "runlim_log_path": runlim_log_path,
         "returncode": returncode,
         "error_message": stderr.strip() or None,
         "stdout_path": stdout_path,
@@ -359,6 +449,16 @@ def main() -> None:
     parser.add_argument("--conditions", default=",".join(CONDITIONS))
     parser.add_argument("--seeds", default="1,42,137,777,2026")
     parser.add_argument("--timeout", type=float, default=1800.0)
+    parser.add_argument(
+        "--memory-limit-mb",
+        type=int,
+        help="Process-tree space limit in MB, enforced by runlim",
+    )
+    parser.add_argument("--runlim", default="runlim", help="Path to runlim")
+    parser.add_argument(
+        "--runlim-log-dir",
+        help="Directory for per-run runlim audit logs",
+    )
     parser.add_argument("--output", default="logs/ablation_results.jsonl")
     parser.add_argument("--cores", default=None,
                         help="Linux taskset core list; omitted on other platforms")
@@ -377,6 +477,8 @@ def main() -> None:
         return
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.memory_limit_mb is not None and args.memory_limit_mb <= 0:
+        parser.error("--memory-limit-mb must be positive")
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -403,14 +505,36 @@ def main() -> None:
     output_path = resolve(args.output)
     tour_dir = resolve(args.tour_dir)
     raw_log_dir = resolve(args.raw_log_dir) if args.raw_log_dir else None
+    runlim_binary = None
+    runlim_log_dir = None
+    if args.memory_limit_mb is not None:
+        runlim_binary = shutil.which(args.runlim)
+        if runlim_binary is None and os.path.isfile(resolve(args.runlim)):
+            runlim_binary = resolve(args.runlim)
+        if runlim_binary is None:
+            parser.error(
+                f"runlim executable not found: {args.runlim}; install runlim or "
+                "provide --runlim /absolute/path/to/runlim"
+            )
+        runlim_log_dir = (
+            resolve(args.runlim_log_dir)
+            if args.runlim_log_dir
+            else os.path.join(os.path.dirname(output_path), "runlim")
+        )
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     binary_hash = sha256_file(binary_path)
     completed = set() if args.no_resume else load_completed_keys(output_path)
-    existing_hashes = {key[4] for key in completed}
+    existing_hashes = {key[5] for key in completed}
     if existing_hashes and existing_hashes != {binary_hash}:
         parser.error(
             "output contains a different solver binary; choose a new --output "
             "or use --no-resume to replace it"
+        )
+    existing_memory_limits = {key[4] for key in completed}
+    if existing_memory_limits and existing_memory_limits != {args.memory_limit_mb}:
+        parser.error(
+            "output contains a different memory-limit policy; choose a new "
+            "--output or use --no-resume to replace it"
         )
     commit = git_commit(repo_root)
 
@@ -428,11 +552,16 @@ def main() -> None:
     pending = [
         (graph, condition, seed)
         for graph, condition, seed in scheduled
-        if (os.path.abspath(graph), condition, seed, float(args.timeout), binary_hash)
+        if (
+            os.path.abspath(graph), condition, seed, float(args.timeout),
+            args.memory_limit_mb, binary_hash,
+        )
         not in completed
     ]
     print(f"Graphs: {len(selected_graphs)} | Conditions: {conditions}")
     print(f"Seeds: {seeds} | Timeout: {args.timeout}s | Pending runs: {len(pending)}")
+    print(f"Memory limit: {args.memory_limit_mb} MB" if args.memory_limit_mb else
+          "Memory limit: not enforced")
     print(f"Output: {output_path}")
 
     graph_cache: Dict[str, Tuple[int, int, Dict[int, Set[int]]]] = {}
@@ -441,14 +570,15 @@ def main() -> None:
         for index, (graph_path, condition, seed) in enumerate(pending, 1):
             record = run_benchmark_instance(
                 binary_path, binary_hash, commit, graph_path, condition, seed,
-                args.timeout, tour_dir, raw_log_dir, args.cores, graph_cache,
+                args.timeout, tour_dir, raw_log_dir, args.cores,
+                args.memory_limit_mb, runlim_binary, runlim_log_dir, graph_cache,
             )
             output.write(json.dumps(record, sort_keys=True) + "\n")
             output.flush()
             print(
                 f"[{index}/{len(pending)}] {record['graph']} | {condition} | "
                 f"seed={seed} | {record['status']} | {record['wall_time']:.3f}s | "
-                f"verified={record['verified']}"
+                f"memory={record['peak_memory_mb']}MB | verified={record['verified']}"
             )
 
 
