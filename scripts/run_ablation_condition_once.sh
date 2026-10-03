@@ -9,6 +9,8 @@ all_conditions="full,no-dispatch,no-decomposition,no-two-cut"
 seed=1
 timeout=1800
 memory_limit_mb=7168
+shard_count="${HCP_ABLATION_SHARD_COUNT:-1}"
+shard_index="${HCP_ABLATION_SHARD_INDEX:-0}"
 
 if [[ "$#" -ne 1 ]]; then
   echo "Usage: $0 {full|no-dispatch|no-decomposition|no-two-cut}" >&2
@@ -23,6 +25,26 @@ case "$condition" in
     exit 2
     ;;
 esac
+
+if ! [[ "$shard_count" =~ ^[1-9][0-9]*$ ]]; then
+  echo "HCP_ABLATION_SHARD_COUNT must be a positive integer." >&2
+  exit 2
+fi
+if ! [[ "$shard_index" =~ ^[0-9]+$ ]] || (( shard_index >= shard_count )); then
+  echo "HCP_ABLATION_SHARD_INDEX must be in [0, HCP_ABLATION_SHARD_COUNT)." >&2
+  exit 2
+fi
+
+selected_graph_numbers=()
+selected_graphs=()
+for ((graph_number = 1; graph_number <= 1001; graph_number++)); do
+  if (( (graph_number - 1) % shard_count == shard_index )); then
+    selected_graph_numbers+=("$graph_number")
+    selected_graphs+=("graph${graph_number}")
+  fi
+done
+selected_graph_numbers_csv="$(IFS=,; echo "${selected_graph_numbers[*]}")"
+selected_graphs_csv="$(IFS=,; echo "${selected_graphs[*]}")"
 
 mkdir -p "$run_dir/raw-logs" "$run_dir/runlim" "$run_dir/tours"
 
@@ -72,7 +94,9 @@ cargo build --release --locked --manifest-path "$repo_root/src/cegar-fix/Cargo.t
 
 REPO_ROOT="$repo_root" BINARY="$binary" GRAPHS_DIR="$graphs_dir" RUN_DIR="$run_dir" \
 CONDITIONS="$all_conditions" CONDITION="$condition" SEED="$seed" TIMEOUT="$timeout" \
-MEMORY_LIMIT_MB="$memory_limit_mb" RUNLIM_BIN="$runlim_bin" python3 - <<'PY'
+MEMORY_LIMIT_MB="$memory_limit_mb" RUNLIM_BIN="$runlim_bin" \
+SHARD_COUNT="$shard_count" SHARD_INDEX="$shard_index" \
+SELECTED_GRAPH_NUMBERS="$selected_graph_numbers_csv" python3 - <<'PY'
 import hashlib
 import json
 import os
@@ -112,6 +136,19 @@ if actual_names != expected_names:
     )
 graph_paths.sort(key=lambda path: int(path.stem[5:]))
 
+shard_count = int(os.environ["SHARD_COUNT"])
+shard_index = int(os.environ["SHARD_INDEX"])
+selected_graph_numbers = [
+    int(value) for value in os.environ["SELECTED_GRAPH_NUMBERS"].split(",")
+]
+expected_graph_numbers = [
+    number
+    for number in range(1, 1002)
+    if (number - 1) % shard_count == shard_index
+]
+if selected_graph_numbers != expected_graph_numbers:
+    raise SystemExit("Internal error: graph shard selection is inconsistent")
+
 manifest_lines = []
 for path in graph_paths:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -128,8 +165,14 @@ metadata = {
     "seed": int(os.environ["SEED"]),
     "timeout_seconds": int(os.environ["TIMEOUT"]),
     "memory_limit_mb": int(os.environ["MEMORY_LIMIT_MB"]),
-    "runs_expected": 1001 * len(os.environ["CONDITIONS"].split(",")),
-    "execution": "four nonoverlapping condition jobs; one solver process at a time; up to three solver-internal threads",
+    "matrix_runs_expected": 1001 * len(os.environ["CONDITIONS"].split(",")),
+    "runs_expected": len(selected_graph_numbers),
+    "shard_count": shard_count,
+    "shard_index": shard_index,
+    "shard_number": shard_index + 1,
+    "shard_selection": "round-robin by natural graph number",
+    "selected_graph_numbers": selected_graph_numbers,
+    "execution": "one nonoverlapping graph shard; one solver process at a time; up to three solver-internal threads",
     "git_commit": command_output(["git", "rev-parse", "HEAD"]),
     "git_branch": command_output(["git", "branch", "--show-current"]),
     "git_status_porcelain": command_output(["git", "status", "--porcelain", "--untracked-files=no"]),
@@ -162,7 +205,8 @@ if results_path.exists() and results_path.stat().st_size:
         "git_commit", "binary_sha256",
         "graphs_dir", "dataset_manifest_sha256", "platform", "machine",
         "processor", "logical_cpus", "memory_bytes", "runlim_binary_sha256",
-        "runlim_version", "rustc", "cargo",
+        "runlim_version", "rustc", "cargo", "shard_count", "shard_index",
+        "selected_graph_numbers",
     )
     mismatches = [key for key in frozen_keys if previous.get(key) != metadata.get(key)]
     if mismatches:
@@ -175,9 +219,13 @@ if results_path.exists() and results_path.stat().st_size:
     )
     if "completed_at_utc" in previous:
         metadata["completed_at_utc"] = previous["completed_at_utc"]
+    if "shard_completed_at_utc" in previous:
+        metadata["shard_completed_at_utc"] = previous["shard_completed_at_utc"]
 
 metadata.setdefault("invocations", []).append({
     "condition": os.environ["CONDITION"],
+    "shard_number": shard_index + 1,
+    "shard_count": shard_count,
     "started_at_utc": now,
 })
 
@@ -194,6 +242,7 @@ runner=(
   python3 "$repo_root/tools/benchmark_runner_ablation.py"
   --binary "$binary"
   --graphs-dir "$graphs_dir"
+  --graphs "$selected_graphs_csv"
   --conditions "$condition"
   --seeds "$seed"
   --timeout "$timeout"
@@ -212,7 +261,8 @@ else
 fi
 
 RESULTS="$run_dir/results.jsonl" METADATA="$run_dir/metadata.json" \
-CONDITION="$condition" python3 - <<'PY'
+CONDITION="$condition" SHARD_COUNT="$shard_count" SHARD_INDEX="$shard_index" \
+SELECTED_GRAPH_NUMBERS="$selected_graph_numbers_csv" python3 - <<'PY'
 import json
 import os
 from collections import Counter
@@ -224,6 +274,11 @@ metadata_path = Path(os.environ["METADATA"])
 records = [json.loads(line) for line in results_path.read_text().splitlines() if line.strip()]
 conditions = ("full", "no-dispatch", "no-decomposition", "no-two-cut")
 current_condition = os.environ["CONDITION"]
+shard_count = int(os.environ["SHARD_COUNT"])
+shard_index = int(os.environ["SHARD_INDEX"])
+selected_graph_numbers = {
+    int(value) for value in os.environ["SELECTED_GRAPH_NUMBERS"].split(",")
+}
 expected_features = {
     "full": "name=full seed=1 dispatch=true series=true two_cut=true repair=true directed_cubic=true alternating_workers=3",
     "no-dispatch": "name=no-dispatch seed=1 dispatch=false series=true two_cut=true repair=true directed_cubic=false alternating_workers=3",
@@ -231,7 +286,9 @@ expected_features = {
     "no-two-cut": "name=no-two-cut seed=1 dispatch=true series=true two_cut=false repair=true directed_cubic=true alternating_workers=3",
 }
 allowed_keys = {(f"graph{i}", condition, 1) for i in range(1, 1002) for condition in conditions}
-expected_current_keys = {(f"graph{i}", current_condition, 1) for i in range(1, 1002)}
+expected_current_keys = {
+    (f"graph{i}", current_condition, 1) for i in selected_graph_numbers
+}
 actual_keys = {(r["graph"], r["condition"], int(r["seed"])) for r in records}
 actual_current_keys = {key for key in actual_keys if key[1] == current_condition}
 
@@ -293,29 +350,30 @@ for condition in conditions:
     present = {key for key in actual_keys if key[1] == condition}
     if present == expected:
         completed_conditions.append(condition)
-if current_condition not in completed_conditions:
-    errors.append(f"{current_condition} does not contain 1,001 complete records")
-
 metadata["records"] = len(records)
 metadata["status_counts"] = dict(Counter(r["status"] for r in records))
 metadata["postflight_errors"] = errors
 metadata["completed_conditions"] = completed_conditions
 condition_times = metadata.get("condition_completed_at_utc", {})
-if not errors:
+if not errors and shard_count == 1:
     condition_times[current_condition] = now
+if not errors:
+    metadata["shard_completed_at_utc"] = now
 metadata["condition_completed_at_utc"] = condition_times
 if set(completed_conditions) == set(conditions):
     if len(records) != 4004:
         errors.append(f"all conditions are present but expected 4004 records, found {len(records)}")
     elif not errors:
         metadata["completed_at_utc"] = now
+metadata["shard_complete"] = not errors
 metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
 if errors:
     raise SystemExit("Postflight validation failed: " + "; ".join(errors))
 print(
     f"Postflight validation passed for {current_condition}: "
-    f"1,001 unique, independently checked runs."
+    f"{len(expected_current_keys)} unique, independently checked runs "
+    f"(shard {shard_index + 1}/{shard_count})."
 )
 print("Completed conditions: " + ", ".join(completed_conditions))
 PY
