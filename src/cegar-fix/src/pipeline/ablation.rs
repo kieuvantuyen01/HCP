@@ -7,6 +7,7 @@ pub enum AblationConfig {
     Full,
     NoDecomposition,
     NoDispatch,
+    NoDispatchNoTwoCut,
     NoSeries,
     NoTwoCut,
     NoRepair,
@@ -21,10 +22,11 @@ impl Default for AblationConfig {
 }
 
 impl AblationConfig {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Full,
         Self::NoDecomposition,
         Self::NoDispatch,
+        Self::NoDispatchNoTwoCut,
         Self::NoSeries,
         Self::NoTwoCut,
         Self::NoRepair,
@@ -37,6 +39,7 @@ impl AblationConfig {
             Self::Full => "full",
             Self::NoDecomposition => "no-decomposition",
             Self::NoDispatch => "no-dispatch",
+            Self::NoDispatchNoTwoCut => "no-dispatch-no-two-cut",
             Self::NoSeries => "no-series",
             Self::NoTwoCut => "no-two-cut",
             Self::NoRepair => "no-repair",
@@ -46,7 +49,10 @@ impl AblationConfig {
     }
 
     pub fn dispatch_enabled(self) -> bool {
-        !matches!(self, Self::NoDecomposition | Self::NoDispatch)
+        !matches!(
+            self,
+            Self::NoDecomposition | Self::NoDispatch | Self::NoDispatchNoTwoCut
+        )
     }
 
     pub fn series_enabled(self) -> bool {
@@ -54,7 +60,10 @@ impl AblationConfig {
     }
 
     pub fn two_cut_enabled(self) -> bool {
-        !matches!(self, Self::NoDecomposition | Self::NoTwoCut)
+        !matches!(
+            self,
+            Self::NoDecomposition | Self::NoTwoCut | Self::NoDispatchNoTwoCut
+        )
     }
 
     pub fn repair_enabled(self) -> bool {
@@ -97,6 +106,9 @@ impl FromStr for AblationConfig {
                 Ok(Self::NoDecomposition)
             }
             "no-dispatch" | "nodispatch" => Ok(Self::NoDispatch),
+            "no-dispatch-no-two-cut" | "nodispatchnotwocut" | "structhcp-no-dispatch" => {
+                Ok(Self::NoDispatchNoTwoCut)
+            }
             "no-series"
             | "noseries"
             | "no-contraction"
@@ -139,6 +151,9 @@ mod tests {
     fn ablations_change_only_documented_feature_dependencies() {
         assert!(!AblationConfig::NoDispatch.dispatch_enabled());
         assert!(AblationConfig::NoDispatch.series_enabled());
+        assert!(!AblationConfig::NoDispatchNoTwoCut.dispatch_enabled());
+        assert!(AblationConfig::NoDispatchNoTwoCut.series_enabled());
+        assert!(!AblationConfig::NoDispatchNoTwoCut.two_cut_enabled());
         assert!(!AblationConfig::NoSeries.alternating_dispatch_enabled());
         assert!(AblationConfig::NoSeries.dispatch_enabled());
         assert!(!AblationConfig::NoDecomposition.two_cut_enabled());

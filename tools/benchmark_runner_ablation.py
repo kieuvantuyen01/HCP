@@ -21,6 +21,7 @@ CONDITIONS = (
     "full",
     "no-decomposition",
     "no-dispatch",
+    "no-dispatch-no-two-cut",
     "no-series",
     "no-two-cut",
     "no-repair",

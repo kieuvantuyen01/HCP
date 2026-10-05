@@ -5,21 +5,22 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 run_dir="${HCP_ABLATION_RUN_DIR:-$repo_root/benchmark-runs/ablation-final-once-1001}"
 binary="$repo_root/src/cegar-fix/target/release/cegar-fix"
 graphs_dir="${HCP_GRAPHS_DIR:-$repo_root/FHCPCS-col}"
-all_conditions="full,no-dispatch,no-decomposition,no-two-cut"
+all_conditions="full,no-dispatch,no-dispatch-no-two-cut,no-decomposition,no-two-cut"
 seed=1
 timeout=1800
 memory_limit_mb=7168
 shard_count="${HCP_ABLATION_SHARD_COUNT:-1}"
 shard_index="${HCP_ABLATION_SHARD_INDEX:-0}"
+cores="${HCP_ABLATION_CORES:-1-3}"
 
 if [[ "$#" -ne 1 ]]; then
-  echo "Usage: $0 {full|no-dispatch|no-decomposition|no-two-cut}" >&2
+  echo "Usage: $0 {full|no-dispatch|no-dispatch-no-two-cut|no-decomposition|no-two-cut}" >&2
   exit 2
 fi
 
 condition="$1"
 case "$condition" in
-  full|no-dispatch|no-decomposition|no-two-cut) ;;
+  full|no-dispatch|no-dispatch-no-two-cut|no-decomposition|no-two-cut) ;;
   *)
     echo "Unsupported final condition: $condition" >&2
     exit 2
@@ -96,7 +97,7 @@ REPO_ROOT="$repo_root" BINARY="$binary" GRAPHS_DIR="$graphs_dir" RUN_DIR="$run_d
 CONDITIONS="$all_conditions" CONDITION="$condition" SEED="$seed" TIMEOUT="$timeout" \
 MEMORY_LIMIT_MB="$memory_limit_mb" RUNLIM_BIN="$runlim_bin" \
 SHARD_COUNT="$shard_count" SHARD_INDEX="$shard_index" \
-SELECTED_GRAPH_NUMBERS="$selected_graph_numbers_csv" python3 - <<'PY'
+SELECTED_GRAPH_NUMBERS="$selected_graph_numbers_csv" CORES="$cores" python3 - <<'PY'
 import hashlib
 import json
 import os
@@ -156,10 +157,19 @@ for path in graph_paths:
 manifest_text = "\n".join(manifest_lines) + "\n"
 
 now = datetime.now(timezone.utc).isoformat()
+condition = os.environ["CONDITION"]
+is_deadline_clean_dispatch = condition == "no-dispatch-no-two-cut"
 metadata = {
     "started_at_utc": now,
-    "protocol": "final-single-run",
-    "protocol_document": "docs/research/experiments/2026-09-28-final-single-run-ablation-protocol.md",
+    "protocol": (
+        "deadline-single-seed-clean-dispatch"
+        if is_deadline_clean_dispatch else "final-single-run"
+    ),
+    "protocol_document": (
+        "docs/research/experiments/2026-10-05-structhcp-no-dispatch-single-seed-protocol.md"
+        if is_deadline_clean_dispatch
+        else "docs/research/experiments/2026-09-28-final-single-run-ablation-protocol.md"
+    ),
     "instances": 1001,
     "conditions": os.environ["CONDITIONS"].split(","),
     "seed": int(os.environ["SEED"]),
@@ -172,6 +182,7 @@ metadata = {
     "shard_number": shard_index + 1,
     "shard_selection": "round-robin by natural graph number",
     "selected_graph_numbers": selected_graph_numbers,
+    "cpu_affinity": os.environ["CORES"],
     "execution": "one nonoverlapping graph shard; one solver process at a time; up to three solver-internal threads",
     "git_commit": command_output(["git", "rev-parse", "HEAD"]),
     "git_branch": command_output(["git", "branch", "--show-current"]),
@@ -206,7 +217,7 @@ if results_path.exists() and results_path.stat().st_size:
         "graphs_dir", "dataset_manifest_sha256", "platform", "machine",
         "processor", "logical_cpus", "memory_bytes", "runlim_binary_sha256",
         "runlim_version", "rustc", "cargo", "shard_count", "shard_index",
-        "selected_graph_numbers",
+        "selected_graph_numbers", "cpu_affinity",
     )
     mismatches = [key for key in frozen_keys if previous.get(key) != metadata.get(key)]
     if mismatches:
@@ -246,6 +257,7 @@ runner=(
   --conditions "$condition"
   --seeds "$seed"
   --timeout "$timeout"
+  --cores "$cores"
   --memory-limit-mb "$memory_limit_mb"
   --runlim "$runlim_bin"
   --runlim-log-dir "$run_dir/runlim"
@@ -272,7 +284,10 @@ from pathlib import Path
 results_path = Path(os.environ["RESULTS"])
 metadata_path = Path(os.environ["METADATA"])
 records = [json.loads(line) for line in results_path.read_text().splitlines() if line.strip()]
-conditions = ("full", "no-dispatch", "no-decomposition", "no-two-cut")
+conditions = (
+    "full", "no-dispatch", "no-dispatch-no-two-cut",
+    "no-decomposition", "no-two-cut",
+)
 current_condition = os.environ["CONDITION"]
 shard_count = int(os.environ["SHARD_COUNT"])
 shard_index = int(os.environ["SHARD_INDEX"])
@@ -282,6 +297,7 @@ selected_graph_numbers = {
 expected_features = {
     "full": "name=full seed=1 dispatch=true series=true two_cut=true repair=true directed_cubic=true alternating_workers=3",
     "no-dispatch": "name=no-dispatch seed=1 dispatch=false series=true two_cut=true repair=true directed_cubic=false alternating_workers=3",
+    "no-dispatch-no-two-cut": "name=no-dispatch-no-two-cut seed=1 dispatch=false series=true two_cut=false repair=true directed_cubic=false alternating_workers=3",
     "no-decomposition": "name=no-decomposition seed=1 dispatch=false series=false two_cut=false repair=true directed_cubic=false alternating_workers=3",
     "no-two-cut": "name=no-two-cut seed=1 dispatch=true series=true two_cut=false repair=true directed_cubic=true alternating_workers=3",
 }
@@ -361,8 +377,8 @@ if not errors:
     metadata["shard_completed_at_utc"] = now
 metadata["condition_completed_at_utc"] = condition_times
 if set(completed_conditions) == set(conditions):
-    if len(records) != 4004:
-        errors.append(f"all conditions are present but expected 4004 records, found {len(records)}")
+    if len(records) != 5005:
+        errors.append(f"all conditions are present but expected 5005 records, found {len(records)}")
     elif not errors:
         metadata["completed_at_utc"] = now
 metadata["shard_complete"] = not errors

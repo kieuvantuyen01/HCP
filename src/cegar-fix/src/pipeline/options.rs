@@ -378,7 +378,7 @@ pub fn get_options_app() -> clap::App<'static> {
             Arg::with_name("ablation")
                 .long("ablation")
                 .value_name("NAME")
-                .help("Ablation: full, no-decomposition, no-dispatch, no-series, no-two-cut, no-repair, undirected-cubic, or one-alternating-worker")
+                .help("Ablation: full, no-decomposition, no-dispatch, no-dispatch-no-two-cut, no-series, no-two-cut, no-repair, undirected-cubic, or one-alternating-worker")
                 .takes_value(true)
                 .default_value("full"),
         )
